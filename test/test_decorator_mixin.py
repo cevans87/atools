@@ -1,10 +1,10 @@
 from typing import Any
 import unittest
 
-from decorator_meta import DecoratorMeta
+from decorator_mixin import DecoratorMixin
 
 
-class FooDecorator(metaclass=DecoratorMeta):
+class _FooDecorator:
     def __init__(self, fn, *, bar='baz') -> None:
         self.fn = fn
         self.bar = bar
@@ -15,9 +15,12 @@ class FooDecorator(metaclass=DecoratorMeta):
         return self.fn(*args, **kwargs)
 
 
+foo_decorator = type('FooDecorator', (DecoratorMixin, _FooDecorator), {})
+
+
 class TestDecoratorMeta(unittest.TestCase):
     def test_un_parameterized(self):
-        @FooDecorator
+        @foo_decorator
         def foo():
             ...
 
@@ -25,8 +28,7 @@ class TestDecoratorMeta(unittest.TestCase):
         self.assertEqual(foo.bar, 'baz')
 
     def test_parameterized(self):
-        # FIXME Lint doesn't like that our decorator doesn't define __call__
-        @FooDecorator(bar='qux')
+        @foo_decorator(bar='qux')
         def foo():
             ...
 
@@ -34,10 +36,10 @@ class TestDecoratorMeta(unittest.TestCase):
         self.assertEqual(foo.bar, 'qux')
 
     def test_name(self):
-        self.assertEqual(FooDecorator.__name__, 'FooDecorator')
+        self.assertEqual(foo_decorator.__name__, 'FooDecorator')
 
     def test_call(self):
-        @FooDecorator
+        @foo_decorator
         def foo():
             ...
 
