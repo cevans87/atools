@@ -1,7 +1,6 @@
+from atools import DecoratorMixin
 from typing import Any
 import unittest
-
-from decorator_mixin import DecoratorMixin
 
 
 class _FooDecorator:
