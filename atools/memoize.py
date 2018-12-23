@@ -1,7 +1,40 @@
-from atools.decorator_mixin import DecoratorMixin
+from asyncio import iscoroutine, Event
+from atools.decorator_mixin import DecoratorMixin, Fn
 from collections import ChainMap, OrderedDict
 from inspect import signature
-from typing import Any
+from typing import Any, Optional
+
+
+class _Memo:
+    _sync_called: bool = False
+    _sync_return: Any
+    _async_called: bool = False
+    _async_return: Any
+    _event: Optional[Event] = None
+
+    def __init__(self, fn: Fn):
+        self._fn = fn
+
+    def __call__(self, **kwargs):
+        if not self._sync_called:
+            self._sync_called = True
+            self._sync_return = self._fn(**kwargs)
+
+        if iscoroutine(self._sync_return):
+            return self.__async_unwrap()
+        else:
+            return self._sync_return
+
+    async def __async_unwrap(self):
+        if self._async_called:
+            await self._event.wait()
+        else:
+            self._async_called = True
+            self._event = Event()
+            self._async_return = await self._sync_return
+            self._event.set()
+
+        return self._async_return
 
 
 class _Memoize:
@@ -23,9 +56,9 @@ class _Memoize:
         try:
             self._memoize[key] = self._memoize.pop(key)
         except KeyError:
-            self._memoize[key] = self._fn(**kwargs)
+            self._memoize[key] = _Memo(self._fn)
 
-        return self._memoize[key]
+        return self._memoize[key](**kwargs)
 
 
 memoize = type('Memoize', (DecoratorMixin, _Memoize), {})
