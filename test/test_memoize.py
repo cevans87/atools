@@ -49,6 +49,21 @@ class TestMemoize(unittest.TestCase):
         self.assertEqual(self.loop.run_until_complete(foo(1, baz=1)), 2)
         self.assertEqual(calls, {(1, 1)})
 
+    def test_size(self) -> None:
+        calls = set()
+
+        @memoize(size=1)
+        def foo(bar) -> None:
+            self.assertNotIn(bar, calls)
+            calls.add(bar)
+
+        foo(0)
+        foo(1)
+        self.assertEqual({0, 1}, calls)
+        calls.remove(0)
+        foo(0)
+        self.assertEqual({0, 1}, calls)
+
 
 if __name__ == '__main__':
     unittest.main()

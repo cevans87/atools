@@ -39,9 +39,10 @@ class _Memo:
 
 class _Memoize:
 
-    def __init__(self, fn) -> None:
+    def __init__(self, fn, *, size: Optional[int] = None) -> None:
         self._fn = fn
-        self._memoize: OrderedDict = OrderedDict()
+        self._size = size
+        self._memos: OrderedDict = OrderedDict()
         self._default_kwargs: OrderedDict = OrderedDict([
             (k, v.default) for k, v in signature(self._fn).parameters.items()
         ])
@@ -54,11 +55,14 @@ class _Memoize:
         key = tuple(kwargs.values())
 
         try:
-            self._memoize[key] = self._memoize.pop(key)
+            self._memos[key] = self._memos.pop(key)
         except KeyError:
-            self._memoize[key] = _Memo(self._fn)
+            self._memos[key] = _Memo(self._fn)
 
-        return self._memoize[key](**kwargs)
+        if self._size is not None and self._size < len(self._memos):
+            self._memos.popitem(last=False)
+
+        return self._memos[key](**kwargs)
 
 
 memoize = type('Memoize', (DecoratorMixin, _Memoize), {})
