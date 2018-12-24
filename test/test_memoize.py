@@ -64,6 +64,38 @@ class TestMemoize(unittest.TestCase):
         foo(0)
         self.assertEqual({0, 1}, calls)
 
+    def test_sync_exception(self) -> None:
+        class FooException(Exception):
+            ...
+
+        calls = set()
+
+        @memoize
+        def foo() -> None:
+            self.assertNotIn(1, calls)
+            calls.add(1)
+            raise FooException()
+
+        for _ in range(2):
+            with self.assertRaises(FooException):
+                foo()
+
+    def test_async_exception(self) -> None:
+        class FooException(Exception):
+            ...
+
+        calls = set()
+
+        @memoize
+        async def foo() -> None:
+            self.assertNotIn(1, calls)
+            calls.add(1)
+            raise FooException()
+
+        for _ in range(2):
+            with self.assertRaises(FooException):
+                self.loop.run_until_complete(foo(1))
+
 
 if __name__ == '__main__':
     unittest.main()

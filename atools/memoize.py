@@ -8,8 +8,10 @@ from typing import Any, Optional
 class _Memo:
     _sync_called: bool = False
     _sync_return: Any
+    _sync_raise: bool = False
     _async_called: bool = False
     _async_return: Any
+    _async_raise: bool = False
     _event: Optional[Event] = None
 
     def __init__(self, fn: Fn):
@@ -18,10 +20,16 @@ class _Memo:
     def __call__(self, **kwargs):
         if not self._sync_called:
             self._sync_called = True
-            self._sync_return = self._fn(**kwargs)
+            try:
+                self._sync_return = self._fn(**kwargs)
+            except Exception as e:
+                self._sync_raise = True
+                self._sync_return = e
 
         if iscoroutine(self._sync_return):
             return self.__async_unwrap()
+        elif self._sync_raise:
+            raise self._sync_return
         else:
             return self._sync_return
 
@@ -31,10 +39,17 @@ class _Memo:
         else:
             self._async_called = True
             self._event = Event()
-            self._async_return = await self._sync_return
+            try:
+                self._async_return = await self._sync_return
+            except Exception as e:
+                self._async_raise = True
+                self._async_return = e
             self._event.set()
 
-        return self._async_return
+        if self._async_raise:
+            raise self._async_return
+        else:
+            return self._async_return
 
 
 class _Memoize:
