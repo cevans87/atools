@@ -1,6 +1,8 @@
 from asyncio import get_event_loop
 from atools import memoize
+from atools.util import seconds
 import unittest
+from unittest.mock import MagicMock, patch
 
 
 class TestMemoize(unittest.TestCase):
@@ -95,6 +97,28 @@ class TestMemoize(unittest.TestCase):
         for _ in range(2):
             with self.assertRaises(FooException):
                 self.loop.run_until_complete(foo(1))
+
+    @patch('atools.memoize_decorator.time')
+    def test_expire(self, m_time: MagicMock) -> None:
+        calls = set()
+
+        @memoize(expire='1000000s')
+        def foo() -> None:
+            self.assertNotIn(None, calls)
+            calls.add(None)
+
+        m_time.return_value = 0.0
+        foo()
+        self.assertEqual({None}, calls)
+
+        m_time.return_value = seconds('999999s')
+        foo()
+        self.assertEqual({None}, calls)
+
+        calls.remove(None)
+        m_time.return_value = seconds('1000001s')
+        foo()
+        self.assertEqual({None}, calls)
 
 
 if __name__ == '__main__':

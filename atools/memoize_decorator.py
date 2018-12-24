@@ -1,7 +1,9 @@
 from asyncio import iscoroutine, Event
 from atools.decorator_mixin import DecoratorMixin, Fn
-from collections import ChainMap, OrderedDict
+from atools.util import seconds
+from collections import deque, ChainMap, OrderedDict
 from inspect import signature
+from time import time
 from typing import Any, Optional
 
 
@@ -14,8 +16,9 @@ class _Memo:
     _async_raise: bool = False
     _event: Optional[Event] = None
 
-    def __init__(self, fn: Fn):
+    def __init__(self, fn: Fn, expire_time: Optional[float] = None) -> None:
         self._fn = fn
+        self.expire_time = expire_time
 
     def __call__(self, **kwargs):
         if not self._sync_called:
@@ -54,9 +57,22 @@ class _Memo:
 
 class _Memoize:
 
-    def __init__(self, fn, *, size: Optional[int] = None) -> None:
+    def __init__(
+            self,
+            fn,
+            *,
+            size: Optional[int] = None,
+            expire: Optional[str] = None
+    ) -> None:
+
         self._fn = fn
         self._size = size
+        self._expire_seconds = seconds(expire) if expire is not None else None
+
+        if self._expire_seconds is None:
+            self._expire_order = None
+        else:
+            self._expire_order = deque()
         self._memos: OrderedDict = OrderedDict()
         self._default_kwargs: OrderedDict = OrderedDict([
             (k, v.default) for k, v in signature(self._fn).parameters.items()
@@ -70,11 +86,23 @@ class _Memoize:
         key = tuple(kwargs.values())
 
         try:
-            self._memos[key] = self._memos.pop(key)
-        except KeyError:
-            self._memos[key] = _Memo(self._fn)
+            value = self._memos.pop(key)
+            if self._expire_seconds is not None and value.expire_time < time():
+                raise ValueError('value expired')
+        except (KeyError, ValueError):
+            if self._expire_seconds is None:
+                expire_time = None
+            else:
+                expire_time = time() + self._expire_seconds
+                self._expire_order.append(key)
+            self._memos[key] = _Memo(self._fn, expire_time=expire_time)
+        else:
+            self._memos[key] = value
 
-        if self._size is not None and self._size < len(self._memos):
+        if self._expire_order is not None and \
+                self._memos[self._expire_order[0]].expire_time < time():
+            self._memos.pop(self._expire_order.popleft())
+        elif self._size is not None and self._size < len(self._memos):
             self._memos.popitem(last=False)
 
         return self._memos[key](**kwargs)

@@ -1,4 +1,4 @@
-from .memoize import memoize
+from .memoize_decorator import memoize
 from .decorator_mixin import DecoratorMixin
 
 __all__ = [
