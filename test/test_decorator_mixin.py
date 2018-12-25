@@ -4,6 +4,7 @@ import unittest
 
 
 class _FooDecorator:
+    """FooDoc"""
     def __init__(self, fn, *, bar='baz') -> None:
         self.fn = fn
         self.bar = bar
@@ -14,7 +15,7 @@ class _FooDecorator:
         return self.fn(*args, **kwargs)
 
 
-foo_decorator = type('FooDecorator', (DecoratorMixin, _FooDecorator), {})
+foo_decorator = type('foo_decorator', (DecoratorMixin, _FooDecorator), {})
 
 
 class TestDecoratorMeta(unittest.TestCase):
@@ -35,7 +36,7 @@ class TestDecoratorMeta(unittest.TestCase):
         self.assertEqual(foo.bar, 'qux')
 
     def test_name(self):
-        self.assertEqual(foo_decorator.__name__, 'FooDecorator')
+        self.assertEqual(foo_decorator.__name__, 'foo_decorator')
 
     def test_call(self):
         @foo_decorator
@@ -45,6 +46,9 @@ class TestDecoratorMeta(unittest.TestCase):
         for i in [1, 2]:
             foo()
             self.assertEqual(foo.call_count, i)
+
+    def test_doc(self) -> None:
+        self.assertEqual(foo_decorator.__doc__, _FooDecorator.__doc__)
 
 
 if __name__ == '__main__':

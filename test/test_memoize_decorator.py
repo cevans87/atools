@@ -1,6 +1,6 @@
 from asyncio import get_event_loop
 from atools import memoize
-from atools.util import seconds
+from atools.util import duration
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -16,12 +16,12 @@ class TestMemoize(unittest.TestCase):
 
         @memoize
         def foo() -> None:
-            self.assertNotIn(1, calls)
-            calls.add(1)
+            self.assertNotIn(None, calls)
+            calls.add(None)
 
         foo()
         foo()
-        self.assertIn(1, calls)
+        self.assertEqual({None}, calls)
 
     def test_keyword_same_as_default(self) -> None:
         calls = set()
@@ -74,8 +74,8 @@ class TestMemoize(unittest.TestCase):
 
         @memoize
         def foo() -> None:
-            self.assertNotIn(1, calls)
-            calls.add(1)
+            self.assertNotIn(None, calls)
+            calls.add(None)
             raise FooException()
 
         for _ in range(2):
@@ -90,8 +90,8 @@ class TestMemoize(unittest.TestCase):
 
         @memoize
         async def foo() -> None:
-            self.assertNotIn(1, calls)
-            calls.add(1)
+            self.assertNotIn(None, calls)
+            calls.add(None)
             raise FooException()
 
         for _ in range(2):
@@ -102,7 +102,7 @@ class TestMemoize(unittest.TestCase):
     def test_expire(self, m_time: MagicMock) -> None:
         calls = set()
 
-        @memoize(expire='1000000s')
+        @memoize(expire='24h')
         def foo() -> None:
             self.assertNotIn(None, calls)
             calls.add(None)
@@ -111,12 +111,12 @@ class TestMemoize(unittest.TestCase):
         foo()
         self.assertEqual({None}, calls)
 
-        m_time.return_value = seconds('999999s')
-        foo()
-        self.assertEqual({None}, calls)
-
         calls.remove(None)
-        m_time.return_value = seconds('1000001s')
+        m_time.return_value = duration('23h59m59s')
+        foo()
+        self.assertEqual(set(), calls)
+
+        m_time.return_value = duration('24h1s')
         foo()
         self.assertEqual({None}, calls)
 
