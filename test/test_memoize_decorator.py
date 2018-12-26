@@ -1,4 +1,4 @@
-from asyncio import get_event_loop
+from asyncio import gather, get_event_loop
 from atools import memoize
 from atools.util import duration
 import unittest
@@ -119,6 +119,31 @@ class TestMemoize(unittest.TestCase):
         m_time.return_value = duration('24h1s')
         foo()
         self.assertEqual({None}, calls)
+
+    def test_thundering_herd(self) -> None:
+        calls = set()
+
+        @memoize
+        async def foo() -> None:
+            self.assertNotIn(None, calls)
+            calls.add(None)
+
+        self.loop.run_until_complete(gather(foo(), foo()))
+        self.assertEqual({None}, calls)
+
+    def test_size_le_zero_raises(self) -> None:
+        for size in [-1, 0]:
+            with self.assertRaises(AssertionError):
+                @memoize(size=size)
+                def foo() -> None:
+                    ...
+
+    def test_expire_le_zero_raises(self) -> None:
+        for expire in ['-1s', '0s', -1, 0, -1.0, 0.0]:
+            with self.assertRaises(AssertionError):
+                @memoize(expire=expire)
+                def foo() -> None:
+                    ...
 
 
 if __name__ == '__main__':

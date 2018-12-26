@@ -4,7 +4,7 @@ from atools.util import duration
 from collections import deque, ChainMap, OrderedDict
 from inspect import signature
 from time import time
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 
 class _Memo:
@@ -94,12 +94,14 @@ class _Memoize:
             fn,
             *,
             size: Optional[int] = None,
-            expire: Optional[str] = None
+            expire: Optional[Union[int, str]] = None
     ) -> None:
 
         self._fn = fn
         self._size = size
         self._expire_seconds = duration(expire) if expire is not None else None
+        assert self._size is None or self._size > 0
+        assert self._expire_seconds is None or self._expire_seconds > 0
 
         if self._expire_seconds is None:
             self._expire_order = None
