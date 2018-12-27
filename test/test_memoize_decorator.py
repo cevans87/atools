@@ -99,7 +99,7 @@ class TestMemoize(unittest.TestCase):
                 self.loop.run_until_complete(foo(1))
 
     @patch('atools.memoize_decorator.time')
-    def test_expire(self, m_time: MagicMock) -> None:
+    def test_expire_current_call(self, m_time: MagicMock) -> None:
         calls = set()
 
         @memoize(expire='24h')
@@ -120,7 +120,29 @@ class TestMemoize(unittest.TestCase):
         foo()
         self.assertEqual({None}, calls)
 
-    def test_thundering_herd(self) -> None:
+    @patch('atools.memoize_decorator.time')
+    def test_expire_old_call(self, m_time: MagicMock) -> None:
+        calls = set()
+
+        @memoize(expire='24h')
+        def foo(bar: int) -> None:
+            self.assertNotIn(bar, calls)
+            calls.add(bar)
+
+        m_time.return_value = 0.0
+        foo(1)
+        self.assertEqual({1}, calls)
+
+        calls.remove(1)
+        m_time.return_value = duration('24h1s')
+        foo(2)
+        self.assertEqual({2}, calls)
+
+        m_time.return_value = 0.0
+        foo(1)
+        self.assertEqual({1, 2}, calls)
+
+    def test_async_thundering_herd(self) -> None:
         calls = set()
 
         @memoize
