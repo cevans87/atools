@@ -4,7 +4,7 @@ from atools.util import duration
 from collections import deque, ChainMap, OrderedDict
 from inspect import signature
 from time import time
-from typing import Any, Optional, Union
+from typing import Any, Hashable, Mapping, Optional, Union
 
 
 class _Memo:
@@ -113,12 +113,24 @@ class _Memoize:
         ])
 
     def __call__(self, *args, **kwargs) -> Any:
+        all_params: Mapping[str, Any] = self._all_params(*args, **kwargs)
+
+        key = tuple(all_params.values())
+        memo = self._update_memo(key)
+
+        self._handle_one_expiration()
+
+        return memo(**all_params)
+
+    def _all_params(self, *args, **kwargs) -> Mapping[str, Hashable]:
+        """Returns all params (args, kwargs, and missing default kwargs) for function as kwargs."""
+        args_as_kwargs = {}
         for k, v in zip(self._default_kwargs, args):
-            kwargs[k] = v
-        kwargs = ChainMap(kwargs, self._default_kwargs)
+            args_as_kwargs[k] = v
 
-        key = tuple(kwargs.values())
+        return ChainMap(args_as_kwargs, kwargs, self._default_kwargs)
 
+    def _update_memo(self, key) -> _Memo:
         try:
             value = self._memos.pop(key)
             if self._expire_seconds is not None and value.expire_time < time():
@@ -133,13 +145,14 @@ class _Memoize:
         else:
             self._memos[key] = value
 
+        return self._memos[key]
+
+    def _handle_one_expiration(self) -> None:
         if self._expire_order is not None and \
                 self._memos[self._expire_order[0]].expire_time < time():
             self._memos.pop(self._expire_order.popleft())
         elif self._size is not None and self._size < len(self._memos):
             self._memos.popitem(last=False)
-
-        return self._memos[key](**kwargs)
 
 
 memoize = type('memoize', (DecoratorMixin, _Memoize), {})
