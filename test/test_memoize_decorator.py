@@ -1,6 +1,7 @@
 from asyncio import gather, get_event_loop
 from atools import memoize
 from atools.util import duration
+from typing import List
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -175,6 +176,24 @@ class TestMemoize(unittest.TestCase):
 
         with self.assertRaises(TypeError):
             foo(1, _bar=1)
+
+    def test_pass_unhashable_true_passes_calls(self) -> None:
+        calls = []  # a set won't hold our unhashable
+
+        @memoize(pass_unhashable=True)
+        def foo(bar: List) -> None:
+            calls.append(bar)
+
+        foo([])
+        self.assertEqual([[]], calls)
+
+    def test_pass_unhashable_false_raises(self) -> None:
+        @memoize(pass_unhashable=False)
+        def foo(_bar: List) -> None:
+            ...
+
+        with self.assertRaises(TypeError):
+            foo([])
 
 
 if __name__ == '__main__':

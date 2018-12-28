@@ -9,7 +9,6 @@ through to original code and caches results on filesystem. Subsequent calls to D
 cached results.
 
 ## memoize
-
     Decorates a function call and caches return value for given inputs.
 
     This decorator is not thread safe but is safe with concurrent awaits.
@@ -17,8 +16,11 @@ cached results.
     If 'size' is provided, memoize will only retain up to 'size' return values.
 
     If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
-      'expire' duration is given in days, hours, minutes, and seconds like '1d2h3m4s' for 1 day,
-      2 hours, 3 minutes, and 4 seconds.
+      'expire' duration is given in seconds or a string such as '10s', '1m', or '1d1h1m1s' where
+      days, hours, minutes, and seconds are represented by 'd', 'h', 'm', and 's' respectively.
+
+    If 'ignore_unhashable' is True, memoize will not remember calls that are made with parameters
+      that cannot be hashed instead of raising an exception.
 
     Examples:
 

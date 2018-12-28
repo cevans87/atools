@@ -63,8 +63,11 @@ class _Memoize:
     If 'size' is provided, memoize will only retain up to 'size' return values.
 
     If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
-      'expire' duration is given in days, hours, minutes, and seconds like '1d2h3m4s' for 1 day,
-      2 hours, 3 minutes, and 4 seconds.
+      'expire' duration is given in seconds or a string such as '10s', '1m', or '1d1h1m1s' where
+      days, hours, minutes, and seconds are represented by 'd', 'h', 'm', and 's' respectively.
+
+    If 'pass_unhashable' is True, memoize will not remember calls that are made with parameters
+      that cannot be hashed instead of raising an exception.
 
     Examples:
 
@@ -94,12 +97,14 @@ class _Memoize:
             fn,
             *,
             size: Optional[int] = None,
-            expire: Optional[Union[int, str]] = None
+            expire: Optional[Union[int, str]] = None,
+            pass_unhashable: bool = False,
     ) -> None:
 
         self._fn = fn
         self._size = size
         self._expire_seconds = duration(expire) if expire is not None else None
+        self._pass_unhashable = pass_unhashable
         assert self._size is None or self._size > 0
         assert self._expire_seconds is None or self._expire_seconds > 0
 
@@ -129,23 +134,26 @@ class _Memoize:
 
     def _get_memo(self, key) -> _Memo:
         try:
-            value = self._memos.pop(key)
-            if self._expire_seconds is not None and value.expire_time < time():
+            memo = self._memos[key] = self._memos.pop(key)
+            if self._expire_seconds is not None and memo.expire_time < time():
                 raise ValueError('value expired')
+        except TypeError:
+            if not self._pass_unhashable:
+                raise
+            memo = _Memo(self._fn)
         except (KeyError, ValueError):
             if self._expire_seconds is None:
                 expire_time = None
             else:
                 expire_time = time() + self._expire_seconds
                 self._expire_order.append(key)
-            self._memos[key] = _Memo(self._fn, expire_time=expire_time)
-        else:
-            self._memos[key] = value
+            memo = self._memos[key] = _Memo(self._fn, expire_time=expire_time)
 
-        return self._memos[key]
+        return memo
 
     def _expire_one_memo(self) -> None:
         if self._expire_order is not None and \
+                len(self._expire_order) > 0 and \
                 self._memos[self._expire_order[0]].expire_time < time():
             self._memos.pop(self._expire_order.popleft())
         elif self._size is not None and self._size < len(self._memos):
