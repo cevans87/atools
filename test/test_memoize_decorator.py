@@ -96,7 +96,7 @@ class TestMemoize(unittest.TestCase):
 
         for _ in range(2):
             with self.assertRaises(FooException):
-                self.loop.run_until_complete(foo(1))
+                self.loop.run_until_complete(foo())
 
     @patch('atools.memoize_decorator.time')
     def test_expire_current_call(self, m_time: MagicMock) -> None:
@@ -166,6 +166,15 @@ class TestMemoize(unittest.TestCase):
                 @memoize(expire=expire)
                 def foo() -> None:
                     ...
+
+    def test_args_overlaps_kwargs(self) -> None:
+
+        @memoize
+        def foo(_bar: int) -> None:
+            ...
+
+        with self.assertRaises(TypeError):
+            foo(1, _bar=1)
 
 
 if __name__ == '__main__':
