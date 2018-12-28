@@ -4,7 +4,7 @@ from atools.util import duration
 from collections import deque, ChainMap, OrderedDict
 from inspect import signature
 from time import time
-from typing import Any, Hashable, Mapping, Optional, Union
+from typing import Any, Optional, Tuple, Union
 
 
 class _Memo:
@@ -20,11 +20,11 @@ class _Memo:
         self._fn = fn
         self.expire_time = expire_time
 
-    def __call__(self, **kwargs):
+    def __call__(self, *args, **kwargs):
         if not self._sync_called:
             self._sync_called = True
             try:
-                self._sync_return = self._fn(**kwargs)
+                self._sync_return = self._fn(*args, **kwargs)
             except Exception as e:
                 self._sync_raise = True
                 self._sync_return = e
@@ -113,24 +113,21 @@ class _Memoize:
         ])
 
     def __call__(self, *args, **kwargs) -> Any:
-        all_params: Mapping[str, Any] = self._all_params(*args, **kwargs)
+        key = self._make_key(*args, **kwargs)
+        memo = self._get_memo(key)
+        self._expire_one_memo()
 
-        key = tuple(all_params.values())
-        memo = self._update_memo(key)
+        return memo(*args, **kwargs)
 
-        self._handle_one_expiration()
-
-        return memo(**all_params)
-
-    def _all_params(self, *args, **kwargs) -> Mapping[str, Hashable]:
+    def _make_key(self, *args, **kwargs) -> Tuple:
         """Returns all params (args, kwargs, and missing default kwargs) for function as kwargs."""
         args_as_kwargs = {}
         for k, v in zip(self._default_kwargs, args):
             args_as_kwargs[k] = v
 
-        return ChainMap(args_as_kwargs, kwargs, self._default_kwargs)
+        return tuple(ChainMap(args_as_kwargs, kwargs, self._default_kwargs).values())
 
-    def _update_memo(self, key) -> _Memo:
+    def _get_memo(self, key) -> _Memo:
         try:
             value = self._memos.pop(key)
             if self._expire_seconds is not None and value.expire_time < time():
@@ -147,7 +144,7 @@ class _Memoize:
 
         return self._memos[key]
 
-    def _handle_one_expiration(self) -> None:
+    def _expire_one_memo(self) -> None:
         if self._expire_order is not None and \
                 self._memos[self._expire_order[0]].expire_time < time():
             self._memos.pop(self._expire_order.popleft())
