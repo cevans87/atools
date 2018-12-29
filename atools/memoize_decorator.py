@@ -4,30 +4,36 @@ from atools.util import duration
 from collections import deque, ChainMap, OrderedDict
 from inspect import signature
 from time import time
+from threading import Lock
 from typing import Any, Optional, Tuple, Union
 
 
 class _Memo:
     _sync_called: bool = False
-    _sync_return: Any
+    _sync_return: Any = None
     _sync_raise: bool = False
     _async_called: bool = False
-    _async_return: Any
+    _async_return: Any = None
     _async_raise: bool = False
     _event: Optional[Event] = None
 
-    def __init__(self, fn: Fn, expire_time: Optional[float] = None) -> None:
+    def __init__(
+            self, fn: Fn, expire_time: Optional[float] = None, thread_safe: bool = False
+    ) -> None:
         self._fn = fn
         self.expire_time = expire_time
+        self._thread_safe = thread_safe
+        self._lock: Optional[Lock] = Lock() if thread_safe is True else None
 
     def __call__(self, *args, **kwargs):
-        if not self._sync_called:
-            self._sync_called = True
-            try:
-                self._sync_return = self._fn(*args, **kwargs)
-            except Exception as e:
-                self._sync_raise = True
-                self._sync_return = e
+        with self:
+            if not self._sync_called:
+                self._sync_called = True
+                try:
+                    self._sync_return = self._fn(*args, **kwargs)
+                except Exception as e:
+                    self._sync_raise = True
+                    self._sync_return = e
 
         if iscoroutine(self._sync_return):
             return self.__async_unwrap()
@@ -35,6 +41,14 @@ class _Memo:
             raise self._sync_return
         else:
             return self._sync_return
+
+    def __enter__(self) -> None:
+        if self._lock is not None:
+            self._lock.acquire()
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._lock is not None:
+            self._lock.release()
 
     async def __async_unwrap(self):
         if self._async_called:
@@ -69,17 +83,20 @@ class _Memoize:
     If 'pass_unhashable' is True, memoize will not remember calls that are made with parameters
       that cannot be hashed instead of raising an exception.
 
+    if 'thread_safe' is True, the decorator is guaranteed to be thread safe.
+
     Examples:
 
         - Body will run once for unique input 'bar' and result is cached.
             @memoize
             def foo(bar) -> Any: ...
 
-        - Same as above, but async. This also protects against thundering herds.
+        - Same as above, but async. Concurrent calls with the same 'bar' are safe and will only
+          generate one call
             @memoize
             async def foo(bar) -> Any: ...
 
-        - Calls to foo(1), foo(bar=1), and foo(1, baz='baz') are equivalent and only cached once.
+        - Calls to foo(1), foo(bar=1), and foo(1, baz='baz') are equivalent and only cached once
             @memoize
             def foo(bar, baz='baz'): ...
 
@@ -99,12 +116,16 @@ class _Memoize:
             size: Optional[int] = None,
             expire: Optional[Union[int, str]] = None,
             pass_unhashable: bool = False,
+            thread_safe: bool = False,
     ) -> None:
 
         self._fn = fn
         self._size = size
         self._expire_seconds = duration(expire) if expire is not None else None
         self._pass_unhashable = pass_unhashable
+        self._thread_safe = thread_safe
+
+        self._lock = Lock() if thread_safe else None
         assert self._size is None or self._size > 0
         assert self._expire_seconds is None or self._expire_seconds > 0
 
@@ -119,10 +140,25 @@ class _Memoize:
 
     def __call__(self, *args, **kwargs) -> Any:
         key = self._make_key(*args, **kwargs)
-        memo = self._get_memo(key)
-        self._expire_one_memo()
+
+        with self:
+            memo = self._get_memo(key)
+            self._expire_one_memo()
 
         return memo(*args, **kwargs)
+
+    def __enter__(self) -> None:
+        if self._lock is not None:
+            self._lock.acquire()
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._lock is not None:
+            self._lock.release()
+
+    def reset(self) -> None:
+        with self:
+            self._memos = OrderedDict()
+            self._expire_order = deque() if self._expire_order is not None else None
 
     def _make_key(self, *args, **kwargs) -> Tuple:
         """Returns all params (args, kwargs, and missing default kwargs) for function as kwargs."""
@@ -147,7 +183,8 @@ class _Memoize:
             else:
                 expire_time = time() + self._expire_seconds
                 self._expire_order.append(key)
-            memo = self._memos[key] = _Memo(self._fn, expire_time=expire_time)
+            memo = self._memos[key] = _Memo(
+                self._fn, expire_time=expire_time, thread_safe=self._thread_safe)
 
         return memo
 

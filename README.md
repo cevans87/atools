@@ -19,8 +19,10 @@ cached results.
       'expire' duration is given in seconds or a string such as '10s', '1m', or '1d1h1m1s' where
       days, hours, minutes, and seconds are represented by 'd', 'h', 'm', and 's' respectively.
 
-    If 'ignore_unhashable' is True, memoize will not remember calls that are made with parameters
+    If 'pass_unhashable' is True, memoize will not remember calls that are made with parameters
       that cannot be hashed instead of raising an exception.
+
+    if 'thread_safe' is True, the decorator is guaranteed to be thread safe.
 
     Examples:
 
@@ -28,11 +30,12 @@ cached results.
             @memoize
             def foo(bar) -> Any: ...
 
-        - Same as above, but async. This also protects against thundering herds.
+        - Same as above, but async. Concurrent calls with the same 'bar' are safe and will only
+          generate one call
             @memoize
             async def foo(bar) -> Any: ...
 
-        - Calls to foo(1), foo(bar=1), and foo(1, baz='baz') are equivalent and only cached once.
+        - Calls to foo(1), foo(bar=1), and foo(1, baz='baz') are equivalent and only cached once
             @memoize
             def foo(bar, baz='baz'): ...
 
