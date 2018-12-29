@@ -1,6 +1,7 @@
 from asyncio import gather, get_event_loop
 from atools import memoize
 from atools.util import duration
+from concurrent.futures import as_completed, ThreadPoolExecutor
 from typing import List
 import unittest
 from unittest.mock import MagicMock, patch
@@ -194,6 +195,36 @@ class TestMemoize(unittest.TestCase):
 
         with self.assertRaises(TypeError):
             foo([])
+
+    def test_thread_safe_false_fails_before_true(self) -> None:
+        calls = set()
+
+        @memoize(thread_safe=True)
+        def foo_safe(bar: int) -> None:
+            calls.remove(bar)
+
+        @memoize
+        def foo_unsafe(bar: int) -> None:
+            calls.remove(bar)
+
+        # Make an order of magnitude more racy calls to foo_safe than foo_unsafe. Keep going
+        # until foo_unsafe fails.
+        with ThreadPoolExecutor() as executor:
+            unsafe_call_failed = False
+            while not unsafe_call_failed:
+                for foo in [foo_safe] * 10 + [foo_unsafe]:
+                    for i in range(executor._max_workers // 2):
+                        calls.add(i)
+                    foo.reset()
+                    futures = {
+                        executor.submit(foo, i // 2) for i in range(executor._max_workers)
+                    }
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except KeyError:
+                            self.assertIs(foo, foo_unsafe)
+                            unsafe_call_failed = True
 
 
 if __name__ == '__main__':
