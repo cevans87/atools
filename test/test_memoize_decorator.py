@@ -195,9 +195,42 @@ class TestMemoize(unittest.TestCase):
         with self.assertRaises(TypeError):
             foo([])
 
-    # FIXME there is no test to prove the safety of the 'thread_safe' flag. The difficulty
+    def test_reset(self) -> None:
+        calls = set()
+
+        @memoize
+        def foo() -> None:
+            calls.add(None)
+
+        foo()
+        self.assertEqual({None}, calls)
+        calls.remove(None)
+
+        foo.reset()
+        foo()
+        self.assertEqual({None}, calls)
+
+    # FIXME The following tests do not prove the safety of the 'thread_safe' flag. The difficulty
     #  deterministically producing race conditions spawned the idea of RaceMock to force race
     #  conditions outside a mutex lock. See https://github.com/cevans87/atools/projects/4
+
+    def test_thread_safe_false_does_not_lock(self) -> None:
+        @memoize(thread_safe=False)
+        def foo() -> None:
+            ...
+
+        with patch('atools.memoize_decorator.Lock', side_effect=None) as m_lock:
+            foo()
+            m_lock.assert_not_called()
+
+    def test_thread_safe_true_locks(self) -> None:
+        @memoize(thread_safe=True)
+        def foo() -> None:
+            ...
+
+        with patch('atools.memoize_decorator.Lock', side_effect=None) as m_lock:
+            foo()
+            m_lock.assert_called()
 
 
 if __name__ == '__main__':
