@@ -1,3 +1,4 @@
+[![Build Status](https://travis-ci.org/cevans87/atools.svg?branch=master)](https://travis-ci.org/cevans87/atools)
 # atools
 Python 3.5+ async-enabled decorators and tools including
 
