@@ -2,10 +2,11 @@ language: python
 python:
 - '3.7'
 dist: xenial
+env:
+  PYTHONPATH=.
 before_install:
     - pip install pytest pytest-cov
     - pip install coveralls
-install: python setup.py install
 script: pytest --verbose --cov=atools
 after_success:
     - coveralls
