@@ -6,7 +6,7 @@ before_install:
     - pip install pytest pytest-cov
     - pip install coveralls
 install: python setup.py install
-script: pytest
+script: pytest --verbose --cov=atools
 after_success:
     - coveralls
 deploy:
