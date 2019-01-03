@@ -83,7 +83,7 @@ class TestMemoize(unittest.TestCase):
             with self.assertRaises(FooException):
                 foo()
 
-        body.asser_called_once()
+        body.assert_called_once()
 
     def test_async_exception(self) -> None:
         class FooException(Exception):
@@ -100,7 +100,7 @@ class TestMemoize(unittest.TestCase):
             with self.assertRaises(FooException):
                 self.loop.run_until_complete(foo())
 
-        body.asser_called_once()
+        body.assert_called_once()
 
     @patch('atools.memoize_decorator.time')
     def test_expire_current_call(self, m_time: MagicMock) -> None:
