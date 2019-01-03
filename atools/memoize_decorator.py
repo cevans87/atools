@@ -132,7 +132,7 @@ class _Memoize:
         if self._expire_seconds is None:
             self._expire_order = None
         else:
-            self._expire_order = deque()
+            self._expire_order = OrderedDict()
         self._memos: OrderedDict = OrderedDict()
         self._default_kwargs: OrderedDict = OrderedDict([
             (k, v.default) for k, v in signature(self._fn).parameters.items()
@@ -155,6 +155,10 @@ class _Memoize:
         if self._lock is not None:
             self._lock.release()
 
+    def __len__(self) -> int:
+        with self:
+            return len(self._memos)
+
     def reset(self) -> None:
         with self:
             self._memos = OrderedDict()
@@ -172,6 +176,7 @@ class _Memoize:
         try:
             memo = self._memos[key] = self._memos.pop(key)
             if self._expire_seconds is not None and memo.expire_time < time():
+                self._expire_order.pop(key)
                 raise ValueError('value expired')
         except TypeError:
             if not self._pass_unhashable:
@@ -182,7 +187,7 @@ class _Memoize:
                 expire_time = None
             else:
                 expire_time = time() + self._expire_seconds
-                self._expire_order.append(key)
+                self._expire_order[key] = ...
             memo = self._memos[key] = _Memo(
                 self._fn, expire_time=expire_time, thread_safe=self._thread_safe)
 
@@ -191,8 +196,8 @@ class _Memoize:
     def _expire_one_memo(self) -> None:
         if self._expire_order is not None and \
                 len(self._expire_order) > 0 and \
-                self._memos[self._expire_order[0]].expire_time < time():
-            self._memos.pop(self._expire_order.popleft())
+                self._memos[next(iter(self._expire_order))].expire_time < time():
+            self._memos.pop(self._expire_order.popitem(last=False)[0])
         elif self._size is not None and self._size < len(self._memos):
             self._memos.popitem(last=False)
 
