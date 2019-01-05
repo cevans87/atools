@@ -7,6 +7,7 @@ Fn = Union[Awaitable, Callable]
 Cls = Type
 Decoratee = Union[Cls, Fn]
 Decorated = Union[Cls, Decoratee]
+Decorator = Union[Cls, Decoratee]
 
 
 class _DecoratorMeta(type):
