@@ -1,8 +1,8 @@
-from asyncio import iscoroutine, Event
+from asyncio import Event
 from atools.decorator_mixin import DecoratorMixin, Fn
 from atools.util import duration
 from collections import deque, ChainMap, OrderedDict
-from inspect import signature
+import inspect
 from time import time
 from threading import Lock
 from typing import Any, Optional, Tuple, Union
@@ -35,7 +35,7 @@ class _Memo:
                     self._sync_raise = True
                     self._sync_return = e
 
-        if iscoroutine(self._sync_return):
+        if inspect.iscoroutine(self._sync_return):
             return self.__async_unwrap()
         elif self._sync_raise:
             raise self._sync_return
@@ -135,7 +135,7 @@ class _Memoize:
             self._expire_order = OrderedDict()
         self._memos: OrderedDict = OrderedDict()
         self._default_kwargs: OrderedDict = OrderedDict([
-            (k, v.default) for k, v in signature(self._fn).parameters.items()
+            (k, v.default) for k, v in inspect.signature(self._fn).parameters.items()
         ])
 
     def __call__(self, *args, **kwargs) -> Any:
