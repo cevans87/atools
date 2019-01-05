@@ -1,11 +1,12 @@
 from asyncio import gather, get_event_loop
-from atools import memoize
+from atools import async_test_case, memoize
 from atools.util import duration
 from typing import List
 import unittest
 from unittest.mock import call, MagicMock, patch
 
 
+@async_test_case
 class TestMemoize(unittest.TestCase):
 
     def __init__(self, *args, **kwargs) -> None:
@@ -56,7 +57,7 @@ class TestMemoize(unittest.TestCase):
         self.assertEqual(foo(1, baz=1), 2)
         body.assert_called_once_with(1, 1)
 
-    def test_async(self) -> None:
+    async def test_async(self) -> None:
         body = MagicMock()
 
         @memoize
@@ -65,9 +66,9 @@ class TestMemoize(unittest.TestCase):
 
             return bar + baz
 
-        self.assertEqual(self.loop.run_until_complete(foo(1)), 2)
+        self.assertEqual(await foo(1), 2)
         # noinspection PyArgumentEqualDefault
-        self.assertEqual(self.loop.run_until_complete(foo(1, baz=1)), 2)
+        self.assertEqual(await foo(1, baz=1), 2)
         body.assert_called_once_with(1, 1)
 
     def test_size(self) -> None:
@@ -104,7 +105,7 @@ class TestMemoize(unittest.TestCase):
 
         body.assert_called_once()
 
-    def test_async_exception(self) -> None:
+    async def test_async_exception(self) -> None:
         class FooException(Exception):
             ...
 
@@ -117,7 +118,7 @@ class TestMemoize(unittest.TestCase):
 
         for _ in range(2):
             with self.assertRaises(FooException):
-                self.loop.run_until_complete(foo())
+                await foo()
 
         body.assert_called_once()
 
@@ -201,14 +202,14 @@ class TestMemoize(unittest.TestCase):
         body.assert_called_once_with(1)
         self.assertEqual(len(foo.memoize), 1)
 
-    def test_async_thundering_herd(self) -> None:
+    async def test_async_thundering_herd(self) -> None:
         body = MagicMock()
 
         @memoize
         async def foo() -> None:
             body()
 
-        self.loop.run_until_complete(gather(foo(), foo()))
+        await gather(foo(), foo())
         body.assert_called_once()
 
     def test_size_le_zero_raises(self) -> None:
