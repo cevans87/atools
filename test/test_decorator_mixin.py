@@ -1,6 +1,7 @@
 from atools import DecoratorMixin
 from typing import Any
 import unittest
+from unittest.mock import MagicMock
 
 
 class _FooDecorator:
@@ -24,16 +25,16 @@ class TestDecoratorMeta(unittest.TestCase):
         def foo():
             ...
 
-        self.assertIsNotNone(foo.fn)
-        self.assertEqual(foo.bar, 'baz')
+        self.assertIsNotNone(foo.foo_decorator.fn)
+        self.assertEqual(foo.foo_decorator.bar, 'baz')
 
     def test_parameterized(self):
         @foo_decorator(bar='qux')
         def foo():
             ...
 
-        self.assertIsNotNone(foo.fn)
-        self.assertEqual(foo.bar, 'qux')
+        self.assertIsNotNone(foo.foo_decorator.fn)
+        self.assertEqual(foo.foo_decorator.bar, 'qux')
 
     def test_name(self):
         self.assertEqual(foo_decorator.__name__, 'foo_decorator')
@@ -45,10 +46,30 @@ class TestDecoratorMeta(unittest.TestCase):
 
         for i in [1, 2]:
             foo()
-            self.assertEqual(foo.call_count, i)
+            self.assertEqual(foo.foo_decorator.call_count, i)
 
     def test_doc(self) -> None:
         self.assertEqual(foo_decorator.__doc__, _FooDecorator.__doc__)
+
+    def test_class(self) -> None:
+        @foo_decorator
+        class Foo:
+            pass
+
+        self.assertTrue(isinstance(Foo(), Foo))
+
+    def test_class_method(self) -> None:
+        outer_self = self
+        body = MagicMock()
+
+        class Foo:
+            @foo_decorator
+            def foo(self) -> None:
+                body()
+                outer_self.assertTrue(isinstance(self, Foo))
+
+        Foo().foo()
+        body.assert_called_once()
 
 
 if __name__ == '__main__':

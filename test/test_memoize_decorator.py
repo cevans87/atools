@@ -23,6 +23,25 @@ class TestMemoize(unittest.TestCase):
         foo()
         body.assert_called_once()
 
+    def test_class_function(self) -> None:
+        body = MagicMock()
+
+        class Foo:
+            @memoize
+            def foo(self) -> None:
+                body()
+
+        f = Foo()
+        f.foo()
+        f.foo()
+        body.assert_called_once()
+        body.reset_mock()
+
+        f = Foo()
+        f.foo()
+        f.foo()
+        body.assert_called_once()
+
     def test_keyword_same_as_default(self) -> None:
         body = MagicMock()
 
@@ -59,13 +78,13 @@ class TestMemoize(unittest.TestCase):
             body(bar)
 
         foo(0)
-        self.assertEqual(len(foo), 1)
+        self.assertEqual(len(foo.memoize), 1)
         foo(1)
-        self.assertEqual(len(foo), 1)
+        self.assertEqual(len(foo.memoize), 1)
         body.assert_has_calls([call(0), call(1)], any_order=False)
         body.reset_mock()
         foo(0)
-        self.assertEqual(len(foo), 1)
+        self.assertEqual(len(foo.memoize), 1)
         body.assert_called_once_with(0)
 
     def test_sync_exception(self) -> None:
@@ -132,13 +151,13 @@ class TestMemoize(unittest.TestCase):
         m_time.return_value = duration('0s')
         foo(1)
         body.assert_called_once_with(1)
-        self.assertEqual(len(foo), 1)
+        self.assertEqual(len(foo.memoize), 1)
         body.reset_mock()
 
         m_time.return_value = duration('24h1s')
         foo(2)
         body.assert_called_once_with(2)
-        self.assertEqual(len(foo), 1)
+        self.assertEqual(len(foo.memoize), 1)
 
     @patch('atools.memoize_decorator.time')
     def test_expire_old_item_does_not_expire_new(self, m_time: MagicMock) -> None:
@@ -174,13 +193,13 @@ class TestMemoize(unittest.TestCase):
         foo(1)
         foo(2)
         body.assert_has_calls([call(1), call(2)], any_order=False)
-        self.assertEqual(len(foo), 2)
+        self.assertEqual(len(foo.memoize), 2)
         body.reset_mock()
 
         m_time.return_value = duration('24h1s')
         foo(1)
         body.assert_called_once_with(1)
-        self.assertEqual(len(foo), 1)
+        self.assertEqual(len(foo.memoize), 1)
 
     def test_async_thundering_herd(self) -> None:
         body = MagicMock()
@@ -244,7 +263,7 @@ class TestMemoize(unittest.TestCase):
         body.assert_called_once()
         body.reset_mock()
 
-        foo.reset()
+        foo.memoize.reset()
         foo()
         body.assert_called_once()
 

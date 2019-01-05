@@ -1,19 +1,42 @@
 from __future__ import annotations
+from functools import wraps
+from types import FunctionType
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple, Type, Union
 
 Fn = Union[Awaitable, Callable]
+Cls = Type
+Decoratee = Union[Cls, Fn]
+Decorated = Union[Cls, Decoratee]
 
 
 class _DecoratorMeta(type):
     def __new__(
             mcs, name: str, bases: Tuple[Type, ...], namespace: Dict[str, Any]
     ) -> _DecoratorMeta:
-
         # DecoratorMixin has a __doc__, but we want the __doc__ from the actual decorator class.
         if len(bases) > 1 and bases[0] is DecoratorMixin and '__doc__' not in namespace:
             namespace['__doc__'] = bases[1].__doc__
 
         return super().__new__(mcs, name, bases, namespace)
+
+    def __call__(cls, _decoratee: Optional[Decoratee] = None, **kwargs) -> Decorated:
+        if _decoratee is None:
+            return lambda decoratee: cls(decoratee, **kwargs)
+
+        decorator = super().__call__(_decoratee, **kwargs)
+
+        if not isinstance(_decoratee, FunctionType):
+            # _decoratee is a class. Our decorator should have already done its work.
+            decorated = _decoratee
+        else:
+            # _decoratee is a function. The returned type needs to also be a function.
+            @wraps(_decoratee)
+            def decorated(*inner_args, **inner_kwargs):
+                return decorator(*inner_args, **inner_kwargs)
+
+            setattr(decorated, type(decorator).__name__, decorator)
+
+        return decorated
 
 
 class DecoratorMixin(metaclass=_DecoratorMeta):
@@ -54,21 +77,4 @@ class DecoratorMixin(metaclass=_DecoratorMeta):
         def foo():
             ...
     """
-
-    __fn: Optional[Callable] = None
-    __kwargs: Optional[Dict] = None
-
-    def __init__(self, _fn: Optional[Fn] = None, **kwargs):
-        if _fn is None:
-            self.__kwargs = kwargs
-        else:
-            self.__fn = _fn
-            super().__init__(_fn, **kwargs)
-
-    def __call__(self, *args, **kwargs):
-        if self.__fn is None:
-            self.__init__(args[0], **self.__kwargs)
-            return self
-        else:
-            # noinspection PyUnresolvedReferences
-            return super().__call__(*args, **kwargs)
+    pass
