@@ -1,4 +1,5 @@
 from atools import DecoratorMixin
+import inspect
 from typing import Any
 import unittest
 from unittest.mock import MagicMock
@@ -27,6 +28,9 @@ class TestDecoratorMeta(unittest.TestCase):
 
         self.assertIsNotNone(foo.foo_decorator.fn)
         self.assertEqual(foo.foo_decorator.bar, 'baz')
+
+    def test_signature_is_same_as_decorator(self):
+        self.assertEqual(inspect.signature(foo_decorator), inspect.signature(_FooDecorator))
 
     def test_parameterized(self):
         @foo_decorator(bar='qux')

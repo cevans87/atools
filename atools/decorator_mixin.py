@@ -17,6 +17,7 @@ class _DecoratorMeta(type):
         # DecoratorMixin has a __doc__, but we want the __doc__ from the actual decorator class.
         if len(bases) > 1 and bases[0] is DecoratorMixin and '__doc__' not in namespace:
             namespace['__doc__'] = bases[1].__doc__
+            namespace['__wrapped__'] = bases[1]
 
         return super().__new__(mcs, name, bases, namespace)
 
