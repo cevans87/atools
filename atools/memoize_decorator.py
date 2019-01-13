@@ -22,7 +22,6 @@ class _Memo:
     ) -> None:
         self._fn = fn
         self.expire_time = expire_time
-        self._thread_safe = thread_safe
         self._lock: Optional[Lock] = Lock() if thread_safe is True else None
 
     def __call__(self, *args, **kwargs):
@@ -72,13 +71,12 @@ class _Memo:
 class _Memoize:
     """Decorates a function call and caches return value for given inputs.
 
-    This decorator is not thread safe but is safe with concurrent awaits.
-
     If 'size' is provided, memoize will only retain up to 'size' return values.
 
     If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
-      'expire' duration is given in seconds or a string such as '10s', '1m', or '1d1h1m1s' where
-      days, hours, minutes, and seconds are represented by 'd', 'h', 'm', and 's' respectively.
+      'expire' duration is given as a number of seconds or a string such as '10s', '1m', or
+      '1d1h1m1s' where days, hours, minutes, and seconds are represented by 'd', 'h', 'm', and
+      's' respectively.
 
     If 'pass_unhashable' is True, memoize will not remember calls that are made with parameters
       that cannot be hashed instead of raising an exception.
@@ -91,27 +89,93 @@ class _Memoize:
             @memoize
             def foo(bar) -> Any: ...
 
-        - Same as above, but async. Concurrent calls with the same 'bar' are safe and will only
-          generate one call
+            foo(1)  # Function actually called. Result cached.
+            foo(1)  # Function not called. Previously-cached result returned.
+            foo(2)  # Function actually called. Result cached.
+
+        - Same as above, but async.
             @memoize
             async def foo(bar) -> Any: ...
+
+            # Concurrent calls from the same thread are safe. Only one call is generated. The
+            other nine calls in this example wait for the result.
+            await asyncio.gather(*[foo(1) for _ in range(10)])
 
         - Calls to foo(1), foo(bar=1), and foo(1, baz='baz') are equivalent and only cached once
             @memoize
             def foo(bar, baz='baz'): ...
 
         - Only 10 items are cached. Acts as an LRU.
-            @memoize(size=10)
-            def foo(bar, baz) -> Any: ...
+            @memoize(size=2)
+            def foo(bar) -> Any: ...
+
+            foo(1)  # LRU cache order [foo(1)]
+            foo(2)  # LRU cache order [foo(1), foo(2)]
+            foo(1)  # LRU cache order [foo(2), foo(1)]
+            foo(3)  # LRU cache order [foo(1), foo(3)], foo(2) is evicted to keep cache size at 2
 
        - Items are evicted after 1 minute.
             @memoize(expire='1m')
             def foo(bar) -> Any: ...
+
+            foo(1)  # Function actually called. Result cached.
+            foo(1)  # Function not called. Previously-cached result returned.
+            sleep(61)
+            foo(1)  # Function actually called. Previously-cached result was too old.
+
+        - Thread safety is not enabled by default. It must be explicitly enabled.
+            @memoize(thread_safe=True)
+            def foo(bar) -> Any: ...
+
+            # Concurrent calls from multiple threads are safe. Only one call is generated. The
+            # other nine calls in this example wait for the result.
+            concurrent.futures.Executor.map(foo, [1] * 10)
+
+        - Memoize can be explicitly reset through the function's 'memoize' attribute
+            @memoize
+            def foo(bar) -> Any: ...
+
+            foo(1)  # Function actually called. Result cached.
+            foo(1)  # Function not called. Previously-cached result returned.
+            foo.memoize.reset()
+            foo(1)  # Function actually called. Cache was emptied.
+
+        - Current cache size can be accessed through the function's 'memoize' attribute
+            @memoize
+            def foo(bar) -> Any: ...
+
+            foo(1)
+            foo(2)
+            len(foo.memoize)  # returns 2
+
+        - Properties can be memoized
+            Class Foo:
+                @property
+                @memoize
+                def bar(self, baz): -> Any: ...
+
+            a = Foo()
+            a.bar  # Function actually called. Result cached.
+            a.bar  # Function not called. Previously-cached result returned.
+
+            b = Foo() # Memoize uses 'self' parameter in hash. 'b' does not share returns with 'a'
+            b.bar  # Function actually called. Result cached.
+            b.bar  # Function not called. Previously-cached result returned.
+
+        - Be careful with eviction on instance methods.
+            Class Foo:
+                @memoize(size=1)
+                def foo(self): -> Any: ...
+
+            a, b = Foo(), Foo()
+            a.bar(1)  # LRU cache order [Foo.bar(a)]
+            b.bar(1)  # LRU cache order [Foo.bar(b)], Foo.bar(a) is evicted
+            a.bar(1)  # Foo.bar(a, 1) is actually called cached and again.
     """
 
     def __init__(
             self,
-            fn,
+            fn: Fn,
             *,
             size: Optional[int] = None,
             expire: Optional[Union[int, str]] = None,
@@ -123,9 +187,8 @@ class _Memoize:
         self._size = size
         self._expire_seconds = duration(expire) if expire is not None else None
         self._pass_unhashable = pass_unhashable
-        self._thread_safe = thread_safe
-
         self._lock = Lock() if thread_safe else None
+
         assert self._size is None or self._size > 0
         assert self._expire_seconds is None or self._expire_seconds > 0
 
@@ -189,7 +252,7 @@ class _Memoize:
                 expire_time = time() + self._expire_seconds
                 self._expire_order[key] = ...
             memo = self._memos[key] = _Memo(
-                self._fn, expire_time=expire_time, thread_safe=self._thread_safe)
+                self._fn, expire_time=expire_time, thread_safe=self._lock is not None)
 
         return memo
 
