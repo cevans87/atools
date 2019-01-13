@@ -268,9 +268,26 @@ class TestMemoize(unittest.TestCase):
         foo()
         body.assert_called_once()
 
-    # FIXME The following tests do not prove the safety of the 'thread_safe' flag. The difficulty
-    #  deterministically producing race conditions spawned the idea of RaceMock to force race
-    #  conditions outside a mutex lock. See https://github.com/cevans87/atools/projects/4
+    def test_with_property(self) -> None:
+        body = MagicMock()
+
+        class Foo:
+            @property
+            @memoize
+            def bar(self) -> int:
+                body(self)
+
+                return 1
+
+        a = Foo()
+        self.assertEqual(a.bar, 1)
+        body.assert_called_once_with(a)
+
+        b = Foo()
+        body.reset_mock()
+        self.assertEqual(a.bar, 1)
+        self.assertEqual(b.bar, 1)
+        body.assert_called_once_with(b)
 
     @patch('atools.memoize_decorator.Lock', side_effect=None)
     def test_thread_safe_false_does_not_lock(self, m_lock: MagicMock) -> None:

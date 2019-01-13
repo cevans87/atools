@@ -4,22 +4,17 @@
 Python 3.7+ async-enabled decorators and tools including
 
 - __memoize__ - a function decorator for sync and async functions that memoizes results.
-- __async_test (coming soon)__ - a test class/function decorator that enables unittest.TestCase
-functions to be async.
-- __DevMock (coming soon)__ - a variant of MagicMock that allows first occurrence of a call to pass
-through to original code and caches results on filesystem. Subsequent calls to DevMock return
-cached results.
+- __async_test_case__ - a test class/function decorator that enables test functions to be async.
 
 ## memoize
     Decorates a function call and caches return value for given inputs.
 
-    This decorator is not thread safe but is safe with concurrent awaits.
-
     If 'size' is provided, memoize will only retain up to 'size' return values.
 
     If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
-      'expire' duration is given in seconds or a string such as '10s', '1m', or '1d1h1m1s' where
-      days, hours, minutes, and seconds are represented by 'd', 'h', 'm', and 's' respectively.
+      'expire' duration is given as a number of seconds or a string such as '10s', '1m', or
+      '1d1h1m1s' where days, hours, minutes, and seconds are represented by 'd', 'h', 'm', and
+      's' respectively.
 
     If 'pass_unhashable' is True, memoize will not remember calls that are made with parameters
       that cannot be hashed instead of raising an exception.
@@ -32,25 +27,108 @@ cached results.
             @memoize
             def foo(bar) -> Any: ...
 
-        - Same as above, but async. Concurrent calls with the same 'bar' are safe and will only
-          generate one call
+            foo(1)  # Function actually called. Result cached.
+            foo(1)  # Function not called. Previously-cached result returned.
+            foo(2)  # Function actually called. Result cached.
+
+        - Same as above, but async.
             @memoize
             async def foo(bar) -> Any: ...
+
+            # Concurrent calls from the same thread are safe. Only one call is generated. The
+            other nine calls in this example wait for the result.
+            await asyncio.gather(*[foo(1) for _ in range(10)])
 
         - Calls to foo(1), foo(bar=1), and foo(1, baz='baz') are equivalent and only cached once
             @memoize
             def foo(bar, baz='baz'): ...
 
         - Only 10 items are cached. Acts as an LRU.
-            @memoize(size=10)
-            def foo(bar, baz) -> Any: ...
+            @memoize(size=2)
+            def foo(bar) -> Any: ...
+
+            foo(1)  # LRU cache order [foo(1)]
+            foo(2)  # LRU cache order [foo(1), foo(2)]
+            foo(1)  # LRU cache order [foo(2), foo(1)]
+            foo(3)  # LRU cache order [foo(1), foo(3)], foo(2) is evicted to keep cache size at 2
 
        - Items are evicted after 1 minute.
             @memoize(expire='1m')
             def foo(bar) -> Any: ...
 
-## async_test
-Coming Soon
+            foo(1)  # Function actually called. Result cached.
+            foo(1)  # Function not called. Previously-cached result returned.
+            sleep(61)
+            foo(1)  # Function actually called. Previously-cached result was too old.
 
-## DevMock
-Coming Soon
+        - Thread safety is not enabled by default. It must be explicitly enabled.
+            @memoize(thread_safe=True)
+            def foo(bar) -> Any: ...
+
+            # Concurrent calls from multiple threads are safe. Only one call is generated. The
+            # other nine calls in this example wait for the result.
+            concurrent.futures.Executor.map(foo, [1] * 10)
+
+        - Memoize can be explicitly reset through the function's 'memoize' attribute
+            @memoize
+            def foo(bar) -> Any: ...
+
+            foo(1)  # Function actually called. Result cached.
+            foo(1)  # Function not called. Previously-cached result returned.
+            foo.memoize.reset()
+            foo(1)  # Function actually called. Cache was emptied.
+
+        - Current cache size can be accessed through the function's 'memoize' attribute
+            @memoize
+            def foo(bar) -> Any: ...
+
+            foo(1)
+            foo(2)
+            len(foo.memoize)  # returns 2
+
+        - Properties can be memoized
+            Class Foo:
+                @property
+                @memoize
+                def bar(self, baz): -> Any: ...
+
+            a = Foo()
+            a.bar  # Function actually called. Result cached.
+            a.bar  # Function not called. Previously-cached result returned.
+
+            b = Foo() # Memoize uses 'self' parameter in hash. 'b' does not share returns with 'a'
+            b.bar  # Function actually called. Result cached.
+            b.bar  # Function not called. Previously-cached result returned.
+
+        - Be careful with eviction on instance methods.
+            Class Foo:
+                @memoize(size=1)
+                def foo(self): -> Any: ...
+
+            a, b = Foo(), Foo()
+            a.bar(1)  # LRU cache order [Foo.bar(a)]
+            b.bar(1)  # LRU cache order [Foo.bar(b)], Foo.bar(a) is evicted
+            a.bar(1)  # Foo.bar(a, 1) is actually called cached and again.
+
+## async_test_case
+    Decorates a test function or test class to enable running async test functions.
+
+    Examples:
+        - After decorating a test function, simply calling it will run it.
+            async def test_foo(): -> None: ...
+
+            test_foo()  # Returns a coroutine, but it wasn't awaited, so the test didn't run.
+
+            @async_test_case
+            async def test_foo(): -> None: ...
+
+            test_foo()  # The decorator awaits the decorated function.
+
+        - Test class may be decorated. All async functions with names starting with 'test' are
+          decorated.
+            @async_test_case
+            Class TestFoo(unittest.TestCase):
+                # All of these functions are decorated. Nothing else is needed for them to run.
+                async def test_foo(self) -> None: ...
+                async def test_bar(self) -> None: ...
+                async def test_baz(self) -> None: ...
