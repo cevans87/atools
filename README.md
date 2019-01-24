@@ -5,6 +5,7 @@ Python 3.7+ async-enabled decorators and tools including
 
 - __memoize__ - a function decorator for sync and async functions that memoizes results.
 - __async_test_case__ - a test class/function decorator that enables test functions to be async.
+- __rate__ - a function decorator for sync and async functions that rate limits calls.
 
 ## memoize
     Decorates a function call and caches return value for given inputs.
@@ -132,3 +133,31 @@ Python 3.7+ async-enabled decorators and tools including
                 async def test_foo(self) -> None: ...
                 async def test_bar(self) -> None: ...
                 async def test_baz(self) -> None: ...
+
+## rate                
+    Function decorator that rate limits the number of calls to function.
+
+    'size' must be provided. It specifies the maximum number of calls that may be made concurrently
+      and optionally within a given 'duration' time window.
+
+    If 'duration' is provided, the maximum number of calls is limited to 'size' calls in any given
+      'duration' time window.
+
+    if 'thread_safe' is True, the decorator is guaranteed to be thread safe.
+
+    Examples:
+        - Only 2 concurrent calls allowed.
+            @rate(size=2)
+            async def foo(): ...
+
+        - Only 2 calls allowed per minute.
+            @rate(size=2, duration=60)
+            async def foo(): ...
+
+        - Same as above, but duration specified with a timedelta.
+            @rate_window(size=2, duration=datetime.timedelta(minutes=1))
+            async def foo(): ...
+
+        - Same as above, but thread safe.
+            @rate_window(size=2, duration=datetime.timedelta(minutes=1), thread_safe=True)
+            def foo(): ...
