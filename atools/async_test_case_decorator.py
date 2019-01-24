@@ -1,8 +1,9 @@
 from __future__ import annotations
-from asyncio import get_event_loop
+import asyncio
 from atools.decorator_mixin import DecoratorMixin, Fn, Decoratee, Decorator
 import inspect
 from typing import Any
+import warnings
 
 
 class _AsyncTestCase:
@@ -32,16 +33,27 @@ class _AsyncTestCase:
     def __new__(cls, decoratee: Decoratee) -> Decorator:
         if inspect.isclass(decoratee):
             for k, v in decoratee.__dict__.items():
-                if k.startswith('test') and inspect.iscoroutinefunction(v):
+                if k.startswith('test'):
                     setattr(decoratee, k, async_test_case(v))
 
         return super().__new__(cls)
 
     def __init__(self, fn: Fn) -> None:
-        self.fn = fn
+        self._fn = fn
 
     def __call__(self, *args, **kwargs) -> Any:
-        return get_event_loop().run_until_complete(self.fn(*args, **kwargs))
+        sync_result = self._fn(*args, **kwargs)
+        if inspect.iscoroutinefunction(self._fn):
+            return asyncio.run(sync_result)
+        elif not inspect.iscoroutine(sync_result):
+            return sync_result
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                del sync_result
+            raise RuntimeError(
+                f'{self._fn} returned a coroutine but is not a coroutinefunction. '
+                f'Use {type(self).__name__} as the first decorator for this test function.')
 
 
 async_test_case = type('async_test_case', (DecoratorMixin, _AsyncTestCase), {})
