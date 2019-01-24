@@ -1,6 +1,8 @@
 import unittest
 from atools import async_test_case
-from unittest.mock import MagicMock
+from atools.decorator_mixin import Fn
+from unittest.mock import MagicMock, patch
+from typing import Any
 
 
 class TestAsyncTestCase(unittest.TestCase):
@@ -27,6 +29,19 @@ class TestAsyncTestCase(unittest.TestCase):
 
         Foo().test_foo()
         body.assert_called_once()
+
+    def test_cls_decorator_with_patch_blocking_it_raises(self) -> None:
+        class Bar:
+            bar = None
+
+        @async_test_case
+        class Foo:
+            @patch.object(Bar, 'bar')
+            async def test_foo(self, _m_bar: MagicMock) -> None:
+                ...
+
+        with self.assertRaises(RuntimeError):
+            Foo().test_foo()
 
 
 if __name__ == '__main__':
