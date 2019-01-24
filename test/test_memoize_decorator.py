@@ -1,4 +1,4 @@
-from asyncio import gather, get_event_loop
+from asyncio import gather
 from atools import async_test_case, memoize
 from atools.util import duration
 from typing import List
@@ -8,10 +8,6 @@ from unittest.mock import call, MagicMock, patch
 
 @async_test_case
 class TestMemoize(unittest.TestCase):
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.loop = get_event_loop()
 
     def test_zero_args(self) -> None:
         body = MagicMock()
