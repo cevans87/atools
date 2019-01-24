@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='atools',
-    version='0.2.1',
+    version='0.3.0',
     packages=['', 'atools'],
     python_requires='>=3.7',
     url='https://github.com/cevans87/atools',
