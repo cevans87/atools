@@ -13,9 +13,6 @@ Python 3.7+ async-enabled decorators and tools including
     If 'size' is provided, memoize will only retain up to 'size' return values.
 
     If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
-      'expire' duration is given as a number of seconds or a string such as '10s', '1m', or
-      '1d1h1m1s' where days, hours, minutes, and seconds are represented by 'd', 'h', 'm', and
-      's' respectively.
 
     If 'pass_unhashable' is True, memoize will not remember calls that are made with parameters
       that cannot be hashed instead of raising an exception.
@@ -54,7 +51,7 @@ Python 3.7+ async-enabled decorators and tools including
             foo(3)  # LRU cache order [foo(1), foo(3)], foo(2) is evicted to keep cache size at 2
 
        - Items are evicted after 1 minute.
-            @memoize(expire='1m')
+            @memoize(duration=datetime.timedelta(minutes=1))
             def foo(bar) -> Any: ...
 
             foo(1)  # Function actually called. Result cached.
