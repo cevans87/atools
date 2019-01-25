@@ -1,6 +1,6 @@
 from asyncio import gather
 from atools import async_test_case, memoize
-from atools.util import duration
+from datetime import timedelta
 from typing import List
 import unittest
 from unittest.mock import call, MagicMock, patch
@@ -122,18 +122,18 @@ class TestMemoize(unittest.TestCase):
     def test_expire_current_call(self, m_time: MagicMock) -> None:
         body = MagicMock()
 
-        @memoize(expire='24h')
+        @memoize(duration=timedelta(days=1))
         def foo() -> None:
             body()
 
         m_time.return_value = 0.0
         foo()
-        m_time.return_value = duration('23h59m59s')
+        m_time.return_value = timedelta(hours=23, minutes=59, seconds=59).total_seconds()
         foo()
         body.assert_called_once()
         body.reset_mock()
 
-        m_time.return_value = duration('24h1s')
+        m_time.return_value = timedelta(hours=24, seconds=1).total_seconds()
         foo()
         body.assert_called_once()
 
@@ -141,17 +141,17 @@ class TestMemoize(unittest.TestCase):
     def test_expire_old_call(self, m_time: MagicMock) -> None:
         body = MagicMock()
 
-        @memoize(expire='24h')
+        @memoize(duration=timedelta(days=1))
         def foo(bar: int) -> None:
             body(bar)
 
-        m_time.return_value = duration('0s')
+        m_time.return_value = 0.0
         foo(1)
         body.assert_called_once_with(1)
         self.assertEqual(len(foo.memoize), 1)
         body.reset_mock()
 
-        m_time.return_value = duration('24h1s')
+        m_time.return_value = timedelta(hours=24, seconds=1).total_seconds()
         foo(2)
         body.assert_called_once_with(2)
         self.assertEqual(len(foo.memoize), 1)
@@ -160,21 +160,21 @@ class TestMemoize(unittest.TestCase):
     def test_expire_old_item_does_not_expire_new(self, m_time: MagicMock) -> None:
         body = MagicMock()
 
-        @memoize(expire='24h')
+        @memoize(duration=timedelta(days=1))
         def foo() -> None:
             body()
 
-        m_time.return_value = duration('0s')
+        m_time.return_value = 0.0
         foo()
         body.assert_called_once_with()
         body.reset_mock()
 
-        m_time.return_value = duration('24h1s')
+        m_time.return_value = timedelta(hours=24, seconds=1).total_seconds()
         foo()
         body.assert_called_once_with()
         body.reset_mock()
 
-        m_time.return_value = duration('24h2s')
+        m_time.return_value = timedelta(hours=24, seconds=2).total_seconds()
         foo()
         body.assert_not_called()
 
@@ -182,18 +182,18 @@ class TestMemoize(unittest.TestCase):
     def test_expire_head_of_line_refresh_does_not_stop_eviction(self, m_time: MagicMock) -> None:
         body = MagicMock()
 
-        @memoize(expire='24h')
+        @memoize(duration=timedelta(hours=24))
         def foo(bar: int) -> None:
             body(bar)
 
-        m_time.return_value = duration('0s')
+        m_time.return_value = 0.0
         foo(1)
         foo(2)
         body.assert_has_calls([call(1), call(2)], any_order=False)
         self.assertEqual(len(foo.memoize), 2)
         body.reset_mock()
 
-        m_time.return_value = duration('24h1s')
+        m_time.return_value = timedelta(hours=24, seconds=1).total_seconds()
         foo(1)
         body.assert_called_once_with(1)
         self.assertEqual(len(foo.memoize), 1)
@@ -216,9 +216,9 @@ class TestMemoize(unittest.TestCase):
                     ...
 
     def test_expire_le_zero_raises(self) -> None:
-        for expire in ['-1s', '0s', -1, 0, -1.0, 0.0]:
+        for duration in [timedelta(seconds=-1), timedelta(seconds=0), -1, 0, -1.0, 0.0]:
             with self.assertRaises(AssertionError):
-                @memoize(expire=expire)
+                @memoize(duration=duration)
                 def foo() -> None:
                     ...
 

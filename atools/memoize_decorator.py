@@ -1,7 +1,7 @@
 from asyncio import Event
 from atools.decorator_mixin import DecoratorMixin, Fn
-from atools.util import duration
 from collections import deque, ChainMap, OrderedDict
+from datetime import timedelta
 import inspect
 from time import time
 from threading import Lock
@@ -74,9 +74,6 @@ class _Memoize:
     If 'size' is provided, memoize will only retain up to 'size' return values.
 
     If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
-      'expire' duration is given as a number of seconds or a string such as '10s', '1m', or
-      '1d1h1m1s' where days, hours, minutes, and seconds are represented by 'd', 'h', 'm', and
-      's' respectively.
 
     If 'pass_unhashable' is True, memoize will not remember calls that are made with parameters
       that cannot be hashed instead of raising an exception.
@@ -115,7 +112,7 @@ class _Memoize:
             foo(3)  # LRU cache order [foo(1), foo(3)], foo(2) is evicted to keep cache size at 2
 
        - Items are evicted after 1 minute.
-            @memoize(expire='1m')
+            @memoize(duration=datetime.timedelta(minutes=1))
             def foo(bar) -> Any: ...
 
             foo(1)  # Function actually called. Result cached.
@@ -178,21 +175,21 @@ class _Memoize:
             fn: Fn,
             *,
             size: Optional[int] = None,
-            expire: Optional[Union[int, str]] = None,
+            duration: Optional[Union[int, timedelta]] = None,
             pass_unhashable: bool = False,
             thread_safe: bool = False,
     ) -> None:
 
         self._fn = fn
         self._size = size
-        self._expire_seconds = duration(expire) if expire is not None else None
+        self._duration = duration.total_seconds() if isinstance(duration, timedelta) else duration
         self._pass_unhashable = pass_unhashable
         self._lock = Lock() if thread_safe else None
 
         assert self._size is None or self._size > 0
-        assert self._expire_seconds is None or self._expire_seconds > 0
+        assert self._duration is None or self._duration > 0
 
-        if self._expire_seconds is None:
+        if self._duration is None:
             self._expire_order = None
         else:
             self._expire_order = OrderedDict()
@@ -238,7 +235,7 @@ class _Memoize:
     def _get_memo(self, key) -> _Memo:
         try:
             memo = self._memos[key] = self._memos.pop(key)
-            if self._expire_seconds is not None and memo.expire_time < time():
+            if self._duration is not None and memo.expire_time < time():
                 self._expire_order.pop(key)
                 raise ValueError('value expired')
         except TypeError:
@@ -246,10 +243,10 @@ class _Memoize:
                 raise
             memo = _Memo(self._fn)
         except (KeyError, ValueError):
-            if self._expire_seconds is None:
+            if self._duration is None:
                 expire_time = None
             else:
-                expire_time = time() + self._expire_seconds
+                expire_time = time() + self._duration
                 self._expire_order[key] = ...
             memo = self._memos[key] = _Memo(
                 self._fn, expire_time=expire_time, thread_safe=self._lock is not None)
