@@ -1,7 +1,6 @@
-from asyncio import gather
+from asyncio import coroutine, gather
 from atools import async_test_case, memoize
 from datetime import timedelta
-from typing import List
 import unittest
 from unittest.mock import call, MagicMock, patch
 
@@ -67,7 +66,7 @@ class TestMemoize(unittest.TestCase):
         self.assertEqual(await foo(1, baz=1), 2)
         body.assert_called_once_with(1, 1)
 
-    def test_size(self) -> None:
+    def test_sync_size(self) -> None:
         body = MagicMock()
 
         @memoize(size=1)
@@ -81,6 +80,23 @@ class TestMemoize(unittest.TestCase):
         body.assert_has_calls([call(0), call(1)], any_order=False)
         body.reset_mock()
         foo(0)
+        self.assertEqual(len(foo.memoize), 1)
+        body.assert_called_once_with(0)
+
+    async def test_async_size(self) -> None:
+        body = MagicMock()
+
+        @memoize(size=1)
+        async def foo(bar) -> None:
+            body(bar)
+
+        await foo(0)
+        self.assertEqual(len(foo.memoize), 1)
+        await foo(1)
+        self.assertEqual(len(foo.memoize), 1)
+        body.assert_has_calls([call(0), call(1)], any_order=False)
+        body.reset_mock()
+        await foo(0)
         self.assertEqual(len(foo.memoize), 1)
         body.assert_called_once_with(0)
 
@@ -231,25 +247,7 @@ class TestMemoize(unittest.TestCase):
         with self.assertRaises(TypeError):
             foo(1, _bar=1)
 
-    def test_pass_unhashable_true_passes_calls(self) -> None:
-        body = MagicMock()
-
-        @memoize(pass_unhashable=True)
-        def foo(bar: List) -> None:
-            body(bar)
-
-        foo([])
-        body.assert_called_once_with([])
-
-    def test_pass_unhashable_false_raises(self) -> None:
-        @memoize(pass_unhashable=False)
-        def foo(_bar: List) -> None:
-            ...
-
-        with self.assertRaises(TypeError):
-            foo([])
-
-    def test_reset(self) -> None:
+    def test_sync_reset(self) -> None:
         body = MagicMock()
 
         @memoize
@@ -262,6 +260,21 @@ class TestMemoize(unittest.TestCase):
 
         foo.memoize.reset()
         foo()
+        body.assert_called_once()
+
+    async def test_async_reset(self) -> None:
+        body = MagicMock()
+
+        @memoize
+        async def foo() -> None:
+            body()
+
+        await foo()
+        body.assert_called_once()
+        body.reset_mock()
+
+        foo.memoize.reset()
+        await foo()
         body.assert_called_once()
 
     def test_with_property(self) -> None:
@@ -285,23 +298,53 @@ class TestMemoize(unittest.TestCase):
         self.assertEqual(b.bar, 1)
         body.assert_called_once_with(b)
 
-    @patch('atools.memoize_decorator.Lock', side_effect=None)
-    def test_thread_safe_false_does_not_lock(self, m_lock: MagicMock) -> None:
-        @memoize(thread_safe=False)
+    @patch('atools.memoize_decorator.LockSync', side_effect=None)
+    def test_sync_locks_sync(self, m_lock_sync: MagicMock) -> None:
+        @memoize
         def foo() -> None:
             ...
 
         foo()
-        m_lock.assert_not_called()
+        m_lock_sync.assert_called()
 
-    @patch('atools.memoize_decorator.Lock', side_effect=None)
-    def test_thread_safe_true_locks(self, m_lock: MagicMock) -> None:
-        @memoize(thread_safe=True)
+    @patch('atools.memoize_decorator.LockSync', side_effect=None)
+    @async_test_case
+    async def test_async_does_not_lock_sync(self, m_lock_sync: MagicMock) -> None:
+        @memoize
+        async def foo() -> None:
+            ...
+
+        await foo()
+        m_lock_sync.assert_not_called()
+
+    @patch('atools.memoize_decorator.LockAsync', side_effect=None)
+    @async_test_case
+    async def test_async_locks_async(self, m_lock_async: MagicMock) -> None:
+        m_lock_async_context = m_lock_async.return_value = MagicMock()
+        type(m_lock_async_context).__aenter__ = \
+            coroutine(lambda *args, **kwargs: m_lock_async_context)
+        type(m_lock_async_context).__aexit__ = coroutine(lambda *args, **kwargs: None)
+
+        @memoize
+        async def foo() -> None:
+            ...
+
+        await foo()
+        m_lock_async.assert_called()
+
+    @patch('atools.memoize_decorator.LockAsync', side_effect=None)
+    def test_sync_does_not_lock_async(self, m_lock_async: MagicMock) -> None:
+        m_lock_async_context = m_lock_async.return_value = MagicMock()
+        type(m_lock_async_context).__aenter__ = \
+            coroutine(lambda *args, **kwargs: m_lock_async_context)
+        type(m_lock_async_context).__aexit__ = coroutine(lambda *args, **kwargs: None)
+
+        @memoize
         def foo() -> None:
             ...
 
         foo()
-        m_lock.assert_called()
+        m_lock_async.assert_not_called()
 
 
 if __name__ == '__main__':

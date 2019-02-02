@@ -14,11 +14,6 @@ Python 3.7+ async-enabled decorators and tools including
 
     If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
 
-    If 'pass_unhashable' is True, memoize will not remember calls that are made with parameters
-      that cannot be hashed instead of raising an exception.
-
-    if 'thread_safe' is True, the decorator is guaranteed to be thread safe.
-
     Examples:
 
         - Body will run once for unique input 'bar' and result is cached.
@@ -58,14 +53,6 @@ Python 3.7+ async-enabled decorators and tools including
             foo(1)  # Function not called. Previously-cached result returned.
             sleep(61)
             foo(1)  # Function actually called. Previously-cached result was too old.
-
-        - Thread safety is not enabled by default. It must be explicitly enabled.
-            @memoize(thread_safe=True)
-            def foo(bar) -> Any: ...
-
-            # Concurrent calls from multiple threads are safe. Only one call is generated. The
-            # other nine calls in this example wait for the result.
-            concurrent.futures.Executor.map(foo, [1] * 10)
 
         - Memoize can be explicitly reset through the function's 'memoize' attribute
             @memoize
