@@ -60,12 +60,14 @@ class _MemoAsyncContext:
     fn: InitVar[Fn]
 
     _memo_return_async: _MemoReturnAsync = field(init=False)
-    _lock_async: LockAsync = field(init=False, default_factory=lambda: LockAsync())
+    _lock_async: LockAsync = field(default=None, init=False)
 
     def __post_init__(self, fn: Fn) -> None:
         object.__setattr__(self, '_memo_return_async', _MemoReturnAsync(fn=fn))
 
     async def __aenter__(self) -> _MemoReturnAsync:
+        if self._lock_async is None:
+            object.__setattr__(self, '_lock_async', LockAsync())
         async with self._lock_async:
             return self._memo_return_async
 
@@ -187,20 +189,23 @@ class _MemoizeState:
             self._memos.popitem(last=False)
 
 
-@dataclass
+@dataclass(frozen=True)
 class _MemoizeAsync:
     fn: InitVar[Fn]
     size: InitVar[Optional[int]] = None
     duration: InitVar[Optional[Union[int, timedelta]]] = None
     _state: _MemoizeState = field(init=False)
-    _lock_async: LockAsync = field(init=False, default_factory=lambda: LockAsync())
+    _lock_async: LockAsync = field(default=None, init=False)
 
     def __post_init__(
             self, fn: Fn, size: Optional[int], duration: Optional[Union[int, timedelta]]
     ) -> None:
-        self._state = _MemoizeState(fn=fn, size=size, duration=duration)
+        object.__setattr__(self, '_state', _MemoizeState(fn=fn, size=size, duration=duration))
 
     async def __call__(self, *args, **kwargs) -> Any:
+        if self._lock_async is None:
+            object.__setattr__(self, '_lock_async', LockAsync())
+
         key = self._state.make_key(*args, **kwargs)
 
         async with self._lock_async:

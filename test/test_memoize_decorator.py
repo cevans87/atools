@@ -1,4 +1,4 @@
-from asyncio import coroutine, gather
+from asyncio import coroutine, gather, get_event_loop
 from atools import async_test_case, memoize
 from datetime import timedelta
 import unittest
@@ -345,6 +345,15 @@ class TestMemoize(unittest.TestCase):
 
         foo()
         m_lock_async.assert_not_called()
+
+    def test_async_no_event_loop_does_not_raise(self) -> None:
+        # Show that we decorate without having an active event loop
+        with self.assertRaises(RuntimeError):
+            self.assertIsNone(get_event_loop())
+
+        @memoize
+        async def foo() -> None:
+            ...
 
 
 if __name__ == '__main__':
