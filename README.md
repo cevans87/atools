@@ -32,6 +32,15 @@ Python 3.7+ async-enabled decorators and tools including
             other nine calls in this example wait for the result.
             await asyncio.gather(*[foo(1) for _ in range(10)])
 
+        - Classes may be memoized.
+            @memoize
+            Class Foo:
+                def init(self, _): ...
+
+            Foo(1)  # Instance is actually created.
+            Foo(1)  # Instance not created. Previously-cached instance returned.
+            Foo(2)  # Instance is actually created.
+
         - Calls to foo(1), foo(bar=1), and foo(1, baz='baz') are equivalent and only cached once
             @memoize
             def foo(bar, baz='baz'): ...

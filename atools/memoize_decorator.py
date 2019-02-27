@@ -282,6 +282,15 @@ class _Memoize:
             other nine calls in this example wait for the result.
             await asyncio.gather(*[foo(1) for _ in range(10)])
 
+        - Classes may be memoized.
+            @memoize
+            Class Foo:
+                def init(self, _): ...
+
+            Foo(1)  # Instance is actually created.
+            Foo(1)  # Instance not created. Previously-cached instance returned.
+            Foo(2)  # Instance is actually created.
+
         - Calls to foo(1), foo(bar=1), and foo(1, baz='baz') are equivalent and only cached once
             @memoize
             def foo(bar, baz='baz'): ...
@@ -346,6 +355,27 @@ class _Memoize:
             a.bar(1)  # Foo.bar(a, 1) is actually called cached and again.
     """
 
+    def __new__(
+            cls,
+            fn: Fn,
+            *,
+            size: Optional[int] = None,
+            duration: Optional[Union[int, timedelta]] = None,
+    ):
+        if not inspect.isclass(fn):
+            return super().__new__(cls)
+
+        class WrappedMeta(type(fn)):
+            # noinspection PyMethodParameters
+            @memoize
+            def __call__(cls, *args, **kwargs):
+                return super().__call__(*args, **kwargs)
+
+        class Wrapped(fn, metaclass=WrappedMeta):
+            pass
+
+        return type(fn.__name__, (Wrapped,), {})
+
     def __init__(
             self,
             fn: Fn,
@@ -355,7 +385,7 @@ class _Memoize:
     ) -> None:
         if inspect.iscoroutinefunction(fn):
             self._memo = _MemoizeAsync(fn, size=size, duration=duration)
-        else:
+        elif not inspect.isclass(fn):
             self._memo = _MemoizeSync(fn, size=size, duration=duration)
 
     def __call__(self, *args, **kwargs) -> Any:
