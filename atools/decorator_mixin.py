@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import wraps
+import inspect
 from types import FunctionType
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple, Type, Union
 
@@ -27,7 +28,9 @@ class _DecoratorMeta(type):
 
         decorator = super().__call__(_decoratee, **kwargs)
 
-        if not isinstance(_decoratee, FunctionType):
+        if inspect.isclass(decorator):
+            decorated = decorator
+        elif inspect.isclass(_decoratee):
             # _decoratee is a class. Our decorator should have already done its work.
             decorated = _decoratee
         else:

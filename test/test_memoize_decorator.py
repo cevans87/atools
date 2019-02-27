@@ -355,6 +355,36 @@ class TestMemoize(unittest.TestCase):
         async def foo() -> None:
             ...
 
+    def test_memoizes_class(self) -> None:
+        body = MagicMock()
+
+        class Bar:
+            ...
+
+        @memoize
+        class Foo(Bar):
+            def __init__(self, foo):
+                body(foo)
+
+        self.assertIs(Foo(0), Foo(0))
+        body.assert_called_once_with(0)
+        self.assertIsNot(Foo(0), Foo(1))
+
+    def test_memoizes_class_with_metaclass(self) -> None:
+        body = MagicMock()
+
+        class FooMeta(type):
+            pass
+
+        @memoize
+        class Foo(metaclass=FooMeta):
+            def __init__(self, foo):
+                body(foo)
+
+        self.assertIs(Foo(0), Foo(0))
+        body.assert_called_once_with(0)
+        self.assertIsNot(Foo(0), Foo(1))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
