@@ -1,5 +1,5 @@
 from asyncio import Lock as LockAsync
-from atools.decorator_mixin import DecoratorMixin, Fn
+from atools.decorator_mixin import Decoratee, DecoratorMixin, Fn
 from collections import deque, ChainMap, OrderedDict
 from dataclasses import dataclass, field, InitVar
 from datetime import timedelta
@@ -355,26 +355,27 @@ class _Memoize:
             a.bar(1)  # Foo.bar(a, 1) is actually called cached and again.
     """
 
+    _all_decorators = set()
+
     def __new__(
             cls,
-            fn: Fn,
+            decoratee: Decoratee,
             *,
             size: Optional[int] = None,
             duration: Optional[Union[int, timedelta]] = None,
     ):
-        if not inspect.isclass(fn):
+        if not inspect.isclass(decoratee):
             return super().__new__(cls)
-
-        class WrappedMeta(type(fn)):
+        class WrappedMeta(type(decoratee)):
             # noinspection PyMethodParameters
             @memoize
             def __call__(cls, *args, **kwargs):
                 return super().__call__(*args, **kwargs)
 
-        class Wrapped(fn, metaclass=WrappedMeta):
+        class Wrapped(decoratee, metaclass=WrappedMeta):
             pass
 
-        return type(fn.__name__, (Wrapped,), {})
+        return type(decoratee.__name__, (Wrapped,), {})
 
     def __init__(
             self,
@@ -388,6 +389,8 @@ class _Memoize:
         elif not inspect.isclass(fn):
             self._memo = _MemoizeSync(fn, size=size, duration=duration)
 
+        self._all_decorators.add(self)
+
     def __call__(self, *args, **kwargs) -> Any:
         return self._memo(*args, **kwargs)
 
@@ -396,6 +399,11 @@ class _Memoize:
 
     def reset(self) -> None:
         return self._memo.reset()
+
+    @classmethod
+    def reset_all(cls) -> None:
+        for decorator in cls._all_decorators:
+            decorator.reset()
 
 
 memoize = type('memoize', (DecoratorMixin, _Memoize), {})

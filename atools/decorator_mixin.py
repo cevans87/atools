@@ -1,7 +1,6 @@
 from __future__ import annotations
 from functools import wraps
 import inspect
-from types import FunctionType
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple, Type, Union
 
 Fn = Union[Awaitable, Callable]
