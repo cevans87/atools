@@ -363,7 +363,7 @@ class TestMemoize(unittest.TestCase):
 
         @memoize
         class Foo(Bar):
-            def __init__(self, foo):
+            def __init__(self, foo) -> None:
                 body(foo)
 
         self.assertIs(Foo(0), Foo(0))
@@ -378,12 +378,66 @@ class TestMemoize(unittest.TestCase):
 
         @memoize
         class Foo(metaclass=FooMeta):
-            def __init__(self, foo):
+            def __init__(self, foo) -> None:
                 body(foo)
 
         self.assertIs(Foo(0), Foo(0))
         body.assert_called_once_with(0)
         self.assertIsNot(Foo(0), Foo(1))
+
+    def test_reset_all_resets_class_decorators(self) -> None:
+        foo_body = MagicMock()
+        bar_body = MagicMock()
+
+        @memoize
+        class Foo:
+            def __init__(self) -> None:
+                foo_body()
+
+        @memoize
+        class Bar:
+            def __init__(self) -> None:
+                bar_body()
+
+        Foo()
+        foo_body.assert_called_once()
+        Bar()
+        bar_body.assert_called_once()
+
+        memoize.reset_all()
+        foo_body.reset_mock()
+        bar_body.reset_mock()
+
+        Foo()
+        foo_body.assert_called_once()
+        Bar()
+        bar_body.assert_called_once()
+
+    def test_reset_all_resets_function_decorators(self) -> None:
+        foo_body = MagicMock()
+        bar_body = MagicMock()
+
+        @memoize
+        def foo() -> None:
+            foo_body()
+
+        @memoize
+        def bar() -> None:
+            bar_body()
+
+        foo()
+        foo_body.assert_called_once()
+        bar()
+        bar_body.assert_called_once()
+
+        memoize.reset_all()
+        foo_body.reset_mock()
+        bar_body.reset_mock()
+
+        foo()
+        foo_body.assert_called_once()
+        bar()
+        bar_body.assert_called_once()
 
 
 if __name__ == '__main__':
