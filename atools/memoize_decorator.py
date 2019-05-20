@@ -9,50 +9,68 @@ from threading import Lock as LockSync
 from typing import Any, Optional, Tuple, Type, Union
 
 
+class _MemoZeroValue:
+    pass
+
+
+@dataclass
 class _MemoReturnState:
     called: bool = False
     raised: bool = False
-    value: Any = ...
+    _value: Any = _MemoZeroValue
+
+    @property
+    def value(self) -> Any:
+        assert self._value is not _MemoZeroValue
+        return self._value
+
+    @value.setter
+    def value(self, value: Any) -> None:
+        self._value = value
 
 
 @dataclass(frozen=True)
 class _MemoReturnAsync:
     fn: Fn
+    _lock: LockAsync = field(default_factory=LockAsync)
     _state: _MemoReturnState = field(init=False, default_factory=_MemoReturnState)
 
     async def __call__(self, *args, **kwargs) -> Any:
-        if not self._state.called:
-            self._state.called = True
-            try:
-                self._state.value = await self.fn(*args, **kwargs)
-            except Exception as e:
-                self._state.raised = True
-                self._state.value = e
+        async with self._lock:
+            if not self._state.called:
+                self._state.called = True
+                try:
+                    self._state.value = await self.fn(*args, **kwargs)
+                except Exception as e:
+                    self._state.raised = True
+                    self._state.value = e
 
-        if self._state.raised:
-            raise self._state.value
-        else:
-            return self._state.value
+            if self._state.raised:
+                raise self._state.value
+            else:
+                return self._state.value
 
 
 @dataclass(frozen=True)
 class _MemoReturnSync:
     fn: Fn
+    _lock: LockSync = field(default_factory=LockSync)
     _state: _MemoReturnState = field(init=False, default_factory=_MemoReturnState)
 
     def __call__(self, *args, **kwargs) -> Any:
-        if not self._state.called:
-            self._state.called = True
-            try:
-                self._state.value = self.fn(*args, **kwargs)
-            except Exception as e:
-                self._state.raised = True
-                self._state.value = e
+        with self._lock:
+            if not self._state.called:
+                self._state.called = True
+                try:
+                    self._state.value = self.fn(*args, **kwargs)
+                except Exception as e:
+                    self._state.raised = True
+                    self._state.value = e
 
-        if self._state.raised:
-            raise self._state.value
-        else:
-            return self._state.value
+            if self._state.raised:
+                raise self._state.value
+            else:
+                return self._state.value
 
 
 @dataclass(frozen=True)
@@ -366,6 +384,7 @@ class _Memoize:
     ):
         if not inspect.isclass(decoratee):
             return super().__new__(cls)
+
         class WrappedMeta(type(decoratee)):
             # noinspection PyMethodParameters
             @memoize
