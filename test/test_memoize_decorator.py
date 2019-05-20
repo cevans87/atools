@@ -1,4 +1,4 @@
-from asyncio import coroutine, gather, get_event_loop
+from asyncio import coroutine, create_task, Event, gather, get_event_loop
 from atools import async_test_case, memoize
 from datetime import timedelta
 import unittest
@@ -438,6 +438,25 @@ class TestMemoize(unittest.TestCase):
         foo_body.assert_called_once()
         bar()
         bar_body.assert_called_once()
+
+    async def test_async_herd_waits_for_return(self) -> None:
+        foo_start_event = Event()
+        foo_finish_event = Event()
+
+        @memoize
+        async def foo() -> int:
+            foo_start_event.set()
+            await foo_finish_event.wait()
+            return 0
+
+        task_a, task_b = create_task(foo()), create_task(foo())
+
+        await foo_start_event.wait()
+        foo_finish_event.set()
+
+        foo_a, foo_b = await gather(task_a, task_b)
+
+        self.assertEqual(foo_a, foo_b)
 
 
 if __name__ == '__main__':
