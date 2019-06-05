@@ -1,4 +1,6 @@
-from asyncio import coroutine, create_task, Event, gather, get_event_loop
+from asyncio import (
+    coroutine, ensure_future, Event, gather, get_event_loop, new_event_loop, set_event_loop
+)
 from atools import async_test_case, memoize
 from datetime import timedelta
 import unittest
@@ -7,7 +9,7 @@ from unittest.mock import call, MagicMock, patch
 
 @async_test_case
 class TestMemoize(unittest.TestCase):
-
+    
     def test_zero_args(self) -> None:
         body = MagicMock()
 
@@ -348,12 +350,17 @@ class TestMemoize(unittest.TestCase):
 
     def test_async_no_event_loop_does_not_raise(self) -> None:
         # Show that we decorate without having an active event loop
-        with self.assertRaises(RuntimeError):
-            self.assertIsNone(get_event_loop())
+        # noinspection PyTypeChecker
+        set_event_loop(None)
+        try:
+            with self.assertRaises(RuntimeError):
+                self.assertIsNone(get_event_loop())
 
-        @memoize
-        async def foo() -> None:
-            ...
+            @memoize
+            async def foo() -> None:
+                ...
+        finally:
+            set_event_loop(new_event_loop())
 
     def test_memoizes_class(self) -> None:
         body = MagicMock()
@@ -449,7 +456,7 @@ class TestMemoize(unittest.TestCase):
             await foo_finish_event.wait()
             return 0
 
-        task_a, task_b = create_task(foo()), create_task(foo())
+        task_a, task_b = ensure_future(foo()), ensure_future(foo())
 
         await foo_start_event.wait()
         foo_finish_event.set()

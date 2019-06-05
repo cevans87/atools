@@ -1,4 +1,3 @@
-from __future__ import annotations
 import asyncio
 from atools.decorator_mixin import DecoratorMixin, Fn, Decoratee, Decorator
 import inspect
@@ -44,7 +43,7 @@ class _AsyncTestCase:
     def __call__(self, *args, **kwargs) -> Any:
         sync_result = self._fn(*args, **kwargs)
         if inspect.iscoroutinefunction(self._fn):
-            return asyncio.run(sync_result)
+            return asyncio.get_event_loop().run_until_complete(sync_result)
         elif not inspect.iscoroutine(sync_result):
             return sync_result
         else:
