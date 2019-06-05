@@ -1,7 +1,7 @@
 [![Build Status](https://travis-ci.org/cevans87/atools.svg?branch=master&kill_cache=1)](https://travis-ci.org/cevans87/atools)
 [![Coverage Status](https://coveralls.io/repos/github/cevans87/atools/badge.svg?branch=master&kill_cache=1)](https://coveralls.io/github/cevans87/atools?branch=master)
 # atools
-Python 3.7+ async-enabled decorators and tools including
+Python 3.6+ async-enabled decorators and tools including
 
 - __memoize__ - a function decorator for sync and async functions that memoizes results.
 - __async_test_case__ - a test class/function decorator that enables test functions to be async.

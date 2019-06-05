@@ -1,4 +1,3 @@
-from __future__ import annotations
 from functools import wraps
 import inspect
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple, Type, Union
@@ -13,7 +12,7 @@ Decorator = Union[Cls, Decoratee]
 class _DecoratorMeta(type):
     def __new__(
             mcs, name: str, bases: Tuple[Type, ...], namespace: Dict[str, Any]
-    ) -> _DecoratorMeta:
+    ) -> '_DecoratorMeta':
         # DecoratorMixin has a __doc__, but we want the __doc__ from the actual decorator class.
         if len(bases) > 1 and bases[0] is DecoratorMixin and '__doc__' not in namespace:
             namespace['__doc__'] = bases[1].__doc__

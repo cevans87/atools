@@ -1,4 +1,3 @@
-from __future__ import annotations
 import asyncio
 from asyncio import gather
 from atools import async_test_case, rate
@@ -111,7 +110,7 @@ class TestRate(unittest.TestCase):
 
         await foo()
 
-        task = asyncio.create_task(foo())
+        task = asyncio.ensure_future(foo())
 
         while foo.rate.async_waiters != 1:
             await asyncio.sleep(0)
