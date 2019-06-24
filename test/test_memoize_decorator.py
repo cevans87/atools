@@ -5,6 +5,7 @@ from atools import async_test_case, memoize
 from datetime import timedelta
 import unittest
 from unittest.mock import call, MagicMock, patch
+from weakref import ref
 
 
 @async_test_case
@@ -465,11 +466,21 @@ class TestMemoize(unittest.TestCase):
 
         self.assertEqual(foo_a, foo_b)
 
-    #async def test_memoize_does_not_stop_object_cleanup(self) -> None:
-    #    # TODO make an object, memoize a funciton with that object, and then convert local
-    #    #  variable to a weakref. Assert that the object is cleaned up.
+    async def test_memoize_does_not_stop_object_cleanup(self) -> None:
+        class Foo:
+            pass
 
-    #    raise Exception()
+        @memoize
+        def foo(_: Foo) -> None:
+            ...
+
+        f = Foo()
+        foo(f)
+
+        r = ref(f)
+        assert r() is not None
+        del f
+        assert r() is None
 
 
 if __name__ == '__main__':

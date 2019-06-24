@@ -6,7 +6,7 @@ from datetime import timedelta
 import inspect
 from time import time
 from threading import Lock as SyncLock
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Union
 
 
 class _MemoZeroValue:
@@ -74,15 +74,15 @@ class _MemoizeState:
         self._memos = OrderedDict()
         self._expire_order = deque() if self._expire_order is not None else None
 
-    def make_key(self, *args, **kwargs) -> Tuple:
+    def make_key(self, *args, **kwargs) -> int:
         """Returns all params (args, kwargs, and missing default kwargs) for function as kwargs."""
         args_as_kwargs = {}
         for k, v in zip(self._default_kwargs, args):
             args_as_kwargs[k] = v
 
-        return tuple(ChainMap(args_as_kwargs, kwargs, self._default_kwargs).values())
+        return hash(tuple(ChainMap(args_as_kwargs, kwargs, self._default_kwargs).values()))
 
-    def get_memo(self, key) -> _Memo:
+    def get_memo(self, key: int) -> _Memo:
         try:
             memo = self._memos[key] = self._memos.pop(key)
             if self._duration is not None and memo.expire_time < time():
