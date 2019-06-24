@@ -300,53 +300,53 @@ class TestMemoize(unittest.TestCase):
         self.assertEqual(b.bar, 1)
         body.assert_called_once_with(b)
 
-    @patch('atools.memoize_decorator.LockSync', side_effect=None)
-    def test_sync_locks_sync(self, m_lock_sync: MagicMock) -> None:
+    @patch('atools.memoize_decorator.SyncLock', side_effect=None)
+    def test_sync_locks_sync(self, m_sync_lock: MagicMock) -> None:
         @memoize
         def foo() -> None:
             ...
 
         foo()
-        m_lock_sync.assert_called()
+        m_sync_lock.assert_called()
 
-    @patch('atools.memoize_decorator.LockSync', side_effect=None)
+    @patch('atools.memoize_decorator.SyncLock', side_effect=None)
     @async_test_case
-    async def test_async_does_not_lock_sync(self, m_lock_sync: MagicMock) -> None:
+    async def test_async_does_not_sync_lock(self, m_sync_lock: MagicMock) -> None:
         @memoize
         async def foo() -> None:
             ...
 
         await foo()
-        m_lock_sync.assert_not_called()
+        m_sync_lock.assert_not_called()
 
-    @patch('atools.memoize_decorator.LockAsync', side_effect=None)
+    @patch('atools.memoize_decorator.AsyncLock', side_effect=None)
     @async_test_case
-    async def test_async_locks_async(self, m_lock_async: MagicMock) -> None:
-        m_lock_async_context = m_lock_async.return_value = MagicMock()
-        type(m_lock_async_context).__aenter__ = \
-            coroutine(lambda *args, **kwargs: m_lock_async_context)
-        type(m_lock_async_context).__aexit__ = coroutine(lambda *args, **kwargs: None)
+    async def test_async_locks_async(self, m_async_lock: MagicMock) -> None:
+        m_async_lock_context = m_async_lock.return_value = MagicMock()
+        type(m_async_lock_context).__aenter__ = \
+            coroutine(lambda *args, **kwargs: m_async_lock_context)
+        type(m_async_lock_context).__aexit__ = coroutine(lambda *args, **kwargs: None)
 
         @memoize
         async def foo() -> None:
             ...
 
         await foo()
-        m_lock_async.assert_called()
+        m_async_lock.assert_called()
 
-    @patch('atools.memoize_decorator.LockAsync', side_effect=None)
-    def test_sync_does_not_lock_async(self, m_lock_async: MagicMock) -> None:
-        m_lock_async_context = m_lock_async.return_value = MagicMock()
-        type(m_lock_async_context).__aenter__ = \
-            coroutine(lambda *args, **kwargs: m_lock_async_context)
-        type(m_lock_async_context).__aexit__ = coroutine(lambda *args, **kwargs: None)
+    @patch('atools.memoize_decorator.AsyncLock', side_effect=None)
+    def test_sync_does_not_async_lock(self, m_async_lock: MagicMock) -> None:
+        m_async_lock_context = m_async_lock.return_value = MagicMock()
+        type(m_async_lock_context).__aenter__ = \
+            coroutine(lambda *args, **kwargs: m_async_lock_context)
+        type(m_async_lock_context).__aexit__ = coroutine(lambda *args, **kwargs: None)
 
         @memoize
         def foo() -> None:
             ...
 
         foo()
-        m_lock_async.assert_not_called()
+        m_async_lock.assert_not_called()
 
     def test_async_no_event_loop_does_not_raise(self) -> None:
         # Show that we decorate without having an active event loop
@@ -464,6 +464,12 @@ class TestMemoize(unittest.TestCase):
         foo_a, foo_b = await gather(task_a, task_b)
 
         self.assertEqual(foo_a, foo_b)
+
+    #async def test_memoize_does_not_stop_object_cleanup(self) -> None:
+    #    # TODO make an object, memoize a funciton with that object, and then convert local
+    #    #  variable to a weakref. Assert that the object is cleaned up.
+
+    #    raise Exception()
 
 
 if __name__ == '__main__':
