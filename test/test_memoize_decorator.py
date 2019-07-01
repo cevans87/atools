@@ -482,6 +482,14 @@ class TestMemoize(unittest.TestCase):
         del f
         assert r() is None
 
+    def test_memoize_class_preserves_doc(self) -> None:
+
+        @memoize
+        class Foo:
+            """Foo doc"""
+            
+        assert Foo.__doc__ == "Foo doc"
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

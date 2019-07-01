@@ -323,7 +323,7 @@ class _Memoize:
             class Wrapped(decoratee, metaclass=WrappedMeta):
                 pass
 
-            return type(decoratee.__name__, (Wrapped,), {})
+            return type(decoratee.__name__, (Wrapped,), {'__doc__': decoratee.__doc__})
 
     @staticmethod
     def reset_all() -> None:
