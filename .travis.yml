@@ -2,11 +2,12 @@ language: python
 python:
   - '3.6'
   - '3.7'
+  - '3.8-dev'
 dist: xenial
 env:
   PYTHONPATH=.
 before_install:
-  - pip install pytest pytest-cov
+  - pip install pytest pytest-asyncio pytest-cov
   - pip install coveralls
 install:
   - python setup.py -q install

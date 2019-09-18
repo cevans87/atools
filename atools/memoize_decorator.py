@@ -1,12 +1,15 @@
 from asyncio import Lock as AsyncLock
-from atools.decorator_mixin import Decoratee, DecoratorMixin, Fn
-from collections import deque, ChainMap, OrderedDict
-from dataclasses import dataclass, field, InitVar
+from collections import ChainMap, OrderedDict
+from dataclasses import dataclass, field
 from datetime import timedelta
+from functools import partial, wraps
 import inspect
 from time import time
 from threading import Lock as SyncLock
-from typing import Any, Optional, Union
+from typing import Any, Callable, Mapping, Optional, Type, Union
+
+
+Decoratee = Union[Callable, Type]
 
 
 class _MemoZeroValue:
@@ -30,179 +33,164 @@ class _MemoReturnState:
 
 
 @dataclass(frozen=True)
-class _Memo:
-    fn: Fn
+class _MemoBase:
+    fn: Callable
     expire_time: Optional[float]
-    lock: Union[AsyncLock, SyncLock] = field(init=False)
     memo_return_state: _MemoReturnState = field(init=False, default_factory=_MemoReturnState)
 
-    def __post_init__(self) -> None:
-        if inspect.iscoroutinefunction(self.fn):
-            object.__setattr__(self, 'lock', AsyncLock())
-        else:
-            object.__setattr__(self, 'lock', SyncLock())
+
+@dataclass(frozen=True)
+class _AsyncMemo(_MemoBase):
+    async_lock: AsyncLock = field(init=False, default_factory=lambda: AsyncLock())
 
 
-class _MemoizeState:
-    def __init__(
-            self,
-            fn: Fn,
-            *,
-            size: Optional[int] = None,
-            duration: Optional[Union[int, timedelta]] = None,
-    ) -> None:
-        self._fn = fn
-        self._size = size
-        self._duration = duration.total_seconds() if isinstance(duration, timedelta) else duration
+@dataclass(frozen=True)
+class _SyncMemo(_MemoBase):
+    sync_lock: AsyncLock = field(init=False, default_factory=lambda: SyncLock())
 
-        assert self._size is None or self._size > 0
-        assert self._duration is None or self._duration > 0
 
-        if self._duration is None:
-            self._expire_order = None
-        else:
-            self._expire_order = OrderedDict()
-        self._memos: OrderedDict = OrderedDict()
-        self._default_kwargs: OrderedDict = OrderedDict([
-            (k, v.default) for k, v in inspect.signature(self._fn).parameters.items()
-        ])
+_Memo = Union[_AsyncMemo, _SyncMemo]
+
+
+@dataclass(frozen=True)
+class _MemoizeBase:
+    fn: Callable
+    size: Optional[int]
+    duration: Optional[timedelta]
+    default_kwargs: Mapping[str, Any]
+    
+    expire_order: OrderedDict = field(init=False, default_factory=OrderedDict, hash=False)
+    memos: OrderedDict = field(init=False, default_factory=OrderedDict, hash=False)
 
     def __len__(self) -> int:
-        return len(self._memos)
-
-    def reset(self) -> None:
-        self._memos = OrderedDict()
-        self._expire_order = deque() if self._expire_order is not None else None
-
+        return len(self.memos)
+    
     def make_key(self, *args, **kwargs) -> int:
         """Returns all params (args, kwargs, and missing default kwargs) for function as kwargs."""
         args_as_kwargs = {}
-        for k, v in zip(self._default_kwargs, args):
+        for k, v in zip(self.default_kwargs, args):
             args_as_kwargs[k] = v
 
-        return hash(tuple(ChainMap(args_as_kwargs, kwargs, self._default_kwargs).values()))
-
+        return hash(tuple(ChainMap(args_as_kwargs, kwargs, self.default_kwargs).values()))
+    
     def get_memo(self, key: int) -> _Memo:
         try:
-            memo = self._memos[key] = self._memos.pop(key)
-            if self._duration is not None and memo.expire_time < time():
-                self._expire_order.pop(key)
+            memo = self.memos[key] = self.memos.pop(key)
+            if self.duration is not None and memo.expire_time < time():
+                self.expire_order.pop(key)
                 raise ValueError('value expired')
         except (KeyError, ValueError):
-            if self._duration is None:
+            if self.duration is None:
                 expire_time = None
             else:
-                expire_time = time() + self._duration
-                self._expire_order[key] = ...
+                expire_time = time() + self.duration.total_seconds()
+                # The value has no significance. We're using the dict entirely for ordering keys.
+                self.expire_order[key] = ...
 
-            memo = self._memos[key] = _Memo(self._fn, expire_time=expire_time)
+            memo = self.memos[key] = self.make_memo(self.fn, expire_time=expire_time)
 
         return memo
 
     def expire_one_memo(self) -> None:
-        if self._expire_order is not None and \
-                len(self._expire_order) > 0 and \
-                self._memos[next(iter(self._expire_order))].expire_time < time():
-            self._memos.pop(self._expire_order.popitem(last=False)[0])
-        elif self._size is not None and self._size < len(self._memos):
-            self._memos.popitem(last=False)
+        if self.expire_order is not None and \
+                len(self.expire_order) > 0 and \
+                self.memos[next(iter(self.expire_order))].expire_time < time():
+            self.memos.pop(self.expire_order.popitem(last=False)[0])
+        elif self.size is not None and self.size < len(self.memos):
+            self.memos.popitem(last=False)
 
+    def make_memo(self, fn, expire_time: Optional[float]) -> _Memo:  # pragma: no cover
+        raise NotImplemented
+    
+    def reset(self) -> None:
+        object.__setattr__(self, 'expire_order', OrderedDict())
+        object.__setattr__(self, 'memos', OrderedDict())
+
+
+@dataclass(frozen=True)
+class _AsyncMemoize(_MemoizeBase):
+    
+    def get_decorator(self) -> Callable:
+        async def decorator(*args, **kwargs) -> Any:
+            key = self.make_key(*args, **kwargs)
+
+            memo: _AsyncMemo = self.get_memo(key)
+
+            self.expire_one_memo()
+
+            async with memo.async_lock:
+                if not memo.memo_return_state.called:
+                    memo.memo_return_state.called = True
+                    try:
+                        memo.memo_return_state.value = await memo.fn(*args, **kwargs)
+                    except Exception as e:
+                        memo.memo_return_state.raised = True
+                        memo.memo_return_state.value = e
+
+                if memo.memo_return_state.raised:
+                    raise memo.memo_return_state.value
+                else:
+                    return memo.memo_return_state.value
+
+        decorator.memoize = self
+
+        return decorator
+
+    def make_memo(self, fn, expire_time: Optional[float]) -> _AsyncMemo:
+        return _AsyncMemo(fn=fn, expire_time=expire_time)
+    
+
+@dataclass(frozen=True)
+class _SyncMemoize(_MemoizeBase):
+
+    _sync_lock: SyncLock = field(init=False, default_factory=lambda: SyncLock())
+    
+    def get_decorator(self) -> Callable:
+        def decorator(*args, **kwargs):
+            key = self.make_key(*args, **kwargs)
+
+            with self._sync_lock:
+                memo: _SyncMemo = self.get_memo(key)
+
+            self.expire_one_memo()
+
+            with memo.sync_lock:
+                if not memo.memo_return_state.called:
+                    memo.memo_return_state.called = True
+                    try:
+                        memo.memo_return_state.value = memo.fn(*args, **kwargs)
+                    except Exception as e:
+                        memo.memo_return_state.raised = True
+                        memo.memo_return_state.value = e
+
+                if memo.memo_return_state.raised:
+                    raise memo.memo_return_state.value
+                else:
+                    return memo.memo_return_state.value
+                
+        decorator.memoize = self
+                
+        return decorator
+
+    def make_memo(self, fn, expire_time: Optional[float]) -> _SyncMemo:
+        return _SyncMemo(fn=fn, expire_time=expire_time)
+
+    def reset(self) -> None:
+        with self._sync_lock:
+            super().reset()
+
+
+_Memoize = Union[_AsyncMemoize, _SyncMemoize]
 
 _all_decorators = set()
 
 
-@dataclass(frozen=True)
-class _MemoizeAsync:
-    fn: InitVar[Fn]
-    size: InitVar[Optional[int]] = None
-    duration: InitVar[Optional[Union[int, timedelta]]] = None
-    _state: _MemoizeState = field(init=False)
-
-    def __post_init__(
-            self, fn: Fn, size: Optional[int], duration: Optional[Union[int, timedelta]]
-    ) -> None:
-        object.__setattr__(self, '_state', _MemoizeState(fn=fn, size=size, duration=duration))
-        _all_decorators.add(self)
-
-    async def __call__(self, *args, **kwargs) -> Any:
-        key = self._state.make_key(*args, **kwargs)
-
-        memo = self._state.get_memo(key)
-
-        self._state.expire_one_memo()
-
-        async with memo.lock:
-            if not memo.memo_return_state.called:
-                memo.memo_return_state.called = True
-                try:
-                    memo.memo_return_state.value = await memo.fn(*args, **kwargs)
-                except Exception as e:
-                    memo.memo_return_state.raised = True
-                    memo.memo_return_state.value = e
-
-            if memo.memo_return_state.raised:
-                raise memo.memo_return_state.value
-            else:
-                return memo.memo_return_state.value
-
-    def __len__(self) -> int:
-        return len(self._state)
-
-    def reset(self) -> None:
-        self._state.reset()
-
-
-_memoize_async = type('memoize', (_MemoizeAsync,), {})
-
-
-@dataclass(frozen=True)
-class _MemoizeSync:
-    fn: InitVar[Fn]
-    size: InitVar[Optional[int]] = None
-    duration: InitVar[Optional[Union[int, timedelta]]] = None
-    _state: _MemoizeState = field(init=False)
-    _sync_lock: SyncLock = field(init=False, default_factory=SyncLock)
-
-    def __post_init__(
-            self, fn: Fn, size: Optional[int], duration: Optional[Union[int, timedelta]]
-    ) -> None:
-        object.__setattr__(self, '_state', _MemoizeState(fn=fn, size=size, duration=duration))
-        _all_decorators.add(self)
-
-    def __call__(self, *args, **kwargs) -> Any:
-        key = self._state.make_key(*args, **kwargs)
-
-        with self._sync_lock:
-            memo = self._state.get_memo(key)
-
-        self._state.expire_one_memo()
-
-        with memo.lock:
-            if not memo.memo_return_state.called:
-                memo.memo_return_state.called = True
-                try:
-                    memo.memo_return_state.value = memo.fn(*args, **kwargs)
-                except Exception as e:
-                    memo.memo_return_state.raised = True
-                    memo.memo_return_state.value = e
-
-            if memo.memo_return_state.raised:
-                raise memo.memo_return_state.value
-            else:
-                return memo.memo_return_state.value
-
-    def __len__(self) -> int:
-        return len(self._state)
-
-    def reset(self) -> None:
-        with self._sync_lock:
-            self._state.reset()
-
-
-_memoize_sync = type('memoize', (_MemoizeSync,), {})
-
-
-class _Memoize:
+def memoize(
+    _decoratee: Optional[Decoratee] = None,
+    *,
+    size: Optional[int] = None,
+    duration: Optional[Union[int, float, timedelta]] = None
+):
     """Decorates a function call and caches return value for given inputs.
 
     If 'size' is provided, memoize will only retain up to 'size' return values.
@@ -299,36 +287,46 @@ class _Memoize:
             b.bar(1)  # LRU cache order [Foo.bar(b)], Foo.bar(a) is evicted
             a.bar(1)  # Foo.bar(a, 1) is actually called cached and again.
     """
+    if _decoratee is None:
+        return partial(memoize, size=size, duration=duration)
+    
+    if inspect.isclass(_decoratee):
+        class WrappedMeta(type(_decoratee)):
+            # noinspection PyMethodParameters
+            @memoize(size=size, duration=duration)
+            def __call__(cls, *args, **kwargs):
+                return super().__call__(*args, **kwargs)
 
-    _all_decorators = set()
+        class Wrapped(_decoratee, metaclass=WrappedMeta):
+            pass
 
-    def __new__(
-            cls,
-            decoratee: Decoratee,
-            *,
-            size: Optional[int] = None,
-            duration: Optional[Union[int, timedelta]] = None,
-    ):
-        if inspect.iscoroutinefunction(decoratee):
-            return _memoize_async(decoratee, size=size, duration=duration)
-        elif not inspect.isclass(decoratee):
-            return _memoize_sync(decoratee, size=size, duration=duration)
-        elif inspect.isclass(decoratee):
-            class WrappedMeta(type(decoratee)):
-                # noinspection PyMethodParameters
-                @memoize
-                def __call__(cls, *args, **kwargs):
-                    return super().__call__(*args, **kwargs)
+        return type(_decoratee.__name__, (Wrapped,), {'__doc__': _decoratee.__doc__})
 
-            class Wrapped(decoratee, metaclass=WrappedMeta):
-                pass
+    duration = timedelta(seconds=duration) if isinstance(duration, (int, float)) else duration
+    assert (duration is None) or (duration.total_seconds() > 0)
+    assert (size is None) or (size > 0)
+    fn = _decoratee
+    default_kwargs: Mapping[str, Any] = {
+        k: v.default for k, v in inspect.signature(fn).parameters.items()
+    }
 
-            return type(decoratee.__name__, (Wrapped,), {'__doc__': decoratee.__doc__})
+    if inspect.iscoroutinefunction(_decoratee):
+        decorator = _AsyncMemoize(
+            fn=fn, size=size, duration=duration, default_kwargs=default_kwargs
+        ).get_decorator()
+    else:
+        decorator = _SyncMemoize(
+            fn=fn, size=size, duration=duration, default_kwargs=default_kwargs
+        ).get_decorator()
 
-    @staticmethod
-    def reset_all() -> None:
-        for decorator in _all_decorators:
-            decorator.reset()
+    _all_decorators.add(decorator)
+    
+    return wraps(_decoratee)(decorator)
 
 
-memoize = type('memoize', (DecoratorMixin, _Memoize), {})
+def reset_all() -> None:
+    for decorator in _all_decorators:
+        decorator.memoize.reset()
+
+
+memoize.reset_all = reset_all
