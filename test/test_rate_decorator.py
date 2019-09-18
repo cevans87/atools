@@ -1,162 +1,111 @@
 import asyncio
-from asyncio import gather
-from atools import async_test_case, rate
+from asyncio import coroutine, Event as AsyncEvent, gather
+from atools import rate
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+import pytest
 import threading
+from threading import Event as SyncEvent
 from typing import Awaitable, Callable, Optional
-import unittest
 from unittest.mock import call, MagicMock, patch
 
 
-@async_test_case
-class TestRate(unittest.TestCase):
-
-    def test_size_le_0_fails_assert(self) -> None:
-        for size in [-1, 0]:
-            with self.assertRaises(AssertionError):
-                @rate(size=size)
-                def foo() -> None:
-                    ...
-
-    def test_concurrent_size_limits_sync_concurrency_to_size(self) -> None:
-        depth = 5
-        body = MagicMock()
-
-        def make_foo(foo_size: int, foo_next_foo: Optional[Callable]) -> Callable[..., Awaitable]:
-            event = threading.Event()
-
-            @rate(size=foo_size, thread_safe=True)
-            def foo():
-                while (not event.is_set()) and (foo.rate.sync_waiters != 1):
-                    pass
-
-                body(foo_size)
-                event.set()
-
-                if foo_next_foo is not None:
-                    foo_next_foo()
-
-            return foo
-
-        next_foo: Optional[Callable] = None
-        for size in range(1, depth):
-            next_foo = make_foo(size, next_foo)
-
-        futures = []
-        with ThreadPoolExecutor(max_workers=depth) as executor:
-            for _ in range(depth):
-                futures.append(executor.submit(next_foo))
-
-        body.assert_has_calls([
-            call(repeat)
-            for repeat in range(1, depth)
-            for _ in range(repeat)
-        ], any_order=True)
-
-    async def test_concurrent_size_limits_async_concurrency_to_size(self) -> None:
-        depth = 5
-        body = MagicMock()
-
-        def make_foo(
-                foo_size: int, foo_next_foo: Optional[Callable[..., Awaitable]]
-        ) -> Callable[..., Awaitable]:
-            event = asyncio.Event()
-
-            @rate(size=foo_size)
-            async def foo():
-                while (not event.is_set()) and (foo.rate.async_waiters != 1):
-                    await asyncio.sleep(0)
-
-                body(foo_size)
-                event.set()
-
-                if foo_next_foo is not None:
-                    await foo_next_foo()
-
-            return foo
-
-        next_foo: Optional[Callable[..., Awaitable]] = None
-        for size in range(1, depth):
-            next_foo = make_foo(size, next_foo)
-
-        await gather(*[next_foo() for _ in range(depth)])
-
-        body.assert_has_calls([
-            call(repeat)
-            for repeat in range(1, depth)
-            for _ in range(repeat)
-        ], any_order=True)
-
-    @patch('atools.rate_decorator.async_sleep')
-    @patch('atools.rate_decorator.time')
-    @async_test_case
-    async def test_window_size_limits_async_concurrency_to_size(
-            self,
-            m_time: MagicMock,
-            m_async_sleep: MagicMock,
-    ) -> None:
-        m_time.return_value = 0.0
-        wake = asyncio.Event()
-        m_async_sleep.side_effect = lambda *args, **kwargs: wake.wait()
-
-        body = MagicMock()
-
-        duration = timedelta(days=365)
-
-        @rate(size=1, duration=duration)
-        async def foo() -> None:
-            body(m_time())
-
-        await foo()
-
-        task = asyncio.ensure_future(foo())
-
-        while foo.rate.async_waiters != 1:
-            await asyncio.sleep(0)
-
-        m_time.return_value = duration.total_seconds()
-        wake.set()
-        await task
-
-        m_async_sleep.assert_called_with(duration.total_seconds())
-
-        body.assert_has_calls([call(0.0), call(duration.total_seconds())], any_order=False)
-
-    @patch('atools.rate_decorator.sync_sleep')
-    @patch('atools.rate_decorator.time')
-    def test_window_size_limits_sync_concurrency_to_size(
-            self,
-            m_time: MagicMock,
-            m_sync_sleep: MagicMock,
-    ) -> None:
-        m_time.return_value = 0.0
-        wake = threading.Event()
-        m_sync_sleep.side_effect = lambda *args, **kwargs: wake.wait()
-
-        body = MagicMock()
-
-        duration = timedelta(days=365)
-
-        @rate(size=1, duration=duration, thread_safe=True)
-        def foo() -> None:
-            body(m_time())
-
-        foo()
-
-        with ThreadPoolExecutor() as executor:
-            executor.submit(foo)
-
-            while foo.rate.sync_waiters != 1:
-                pass
-
-            m_time.return_value = duration.total_seconds()
-            wake.set()
-
-        m_sync_sleep.assert_called_with(duration.total_seconds())
-
-        body.assert_has_calls([call(0.0), call(duration.total_seconds())], any_order=False)
+@pytest.fixture
+def time() -> MagicMock:
+    with patch('atools.rate_decorator.time') as time:
+        time.return_value = 0
+        yield time
 
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
+@pytest.fixture
+def async_sleep() -> MagicMock:
+    with patch('atools.rate_decorator.async_sleep') as async_sleep:
+        yield async_sleep
+
+
+@pytest.fixture
+def sync_sleep() -> MagicMock:
+    with patch('atools.rate_decorator.sync_sleep') as sync_sleep:
+        yield sync_sleep
+
+
+def test_size_le_0_fails_assert() -> None:
+    for size in [-1, 0]:
+        try:
+            @rate(size=size)
+            def foo() -> None:
+                ...
+        except AssertionError:
+            pass
+        else:
+            pytest.fail()
+
+
+def test_size_limits_sync_concurrency_to_size(time: MagicMock) -> None:
+    sync_event_0 = SyncEvent()
+    sync_event_1 = SyncEvent()
+    
+    @rate(size=1)
+    def foo():
+        sync_event_0.set()
+        assert sync_event_1.wait()
+
+    with ThreadPoolExecutor() as executor:
+        executor.submit(foo)
+        executor.submit(foo)
+
+        assert sync_event_0.wait(10)
+        assert foo.rate.running == 1
+        sync_event_1.set()
+        
+    assert foo.rate.running == 0
+
+
+@pytest.mark.asyncio
+async def test_size_limits_async_concurrency_to_size(time: MagicMock) -> None:
+    async_event_0 = AsyncEvent()
+    async_event_1 = AsyncEvent()
+
+    @rate(size=1)
+    async def foo():
+        async_event_0.set()
+        assert await async_event_1.wait()
+
+    fut_0 = asyncio.ensure_future(foo())
+    fut_1 = asyncio.ensure_future(foo())
+
+    assert await asyncio.wait_for(async_event_0.wait(), 10)
+    assert foo.rate.running == 1
+    async_event_1.set()
+    
+    await asyncio.gather(fut_0, fut_1)
+
+    assert foo.rate.running == 0
+
+
+def test_duration_causes_sync_waiter_to_sleep(sync_sleep: MagicMock, time: MagicMock) -> None:
+
+    @rate(size=1, duration=10)
+    def foo():
+        ...
+
+    with ThreadPoolExecutor() as executor:
+        executor.submit(foo)
+        executor.submit(foo)
+
+    sync_sleep.assert_called_once_with(10)
+
+
+@pytest.mark.asyncio
+async def test_duration_causes_async_waiter_to_sleep(
+        async_sleep: MagicMock, time: MagicMock
+) -> None:
+    async_sleep.side_effect = coroutine(lambda *_: None)
+
+    @rate(size=1, duration=10)
+    async def foo():
+        ...
+
+    await gather(foo(), foo())
+
+    async_sleep.assert_called_once_with(10)
