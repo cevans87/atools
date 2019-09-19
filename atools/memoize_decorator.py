@@ -211,7 +211,7 @@ def memoize(
             @memoize
             async def foo(bar) -> Any: ...
 
-            # Concurrent calls from the same thread are safe. Only one call is generated. The
+            # Concurrent calls from the same event loop are safe. Only one call is generated. The
             other nine calls in this example wait for the result.
             await asyncio.gather(*[foo(1) for _ in range(10)])
 
@@ -228,7 +228,7 @@ def memoize(
             @memoize
             def foo(bar, baz='baz'): ...
 
-        - Only 10 items are cached. Acts as an LRU.
+        - Only 2 items are cached. Acts as an LRU.
             @memoize(size=2)
             def foo(bar) -> Any: ...
 
@@ -285,7 +285,7 @@ def memoize(
             a, b = Foo(), Foo()
             a.bar(1)  # LRU cache order [Foo.bar(a)]
             b.bar(1)  # LRU cache order [Foo.bar(b)], Foo.bar(a) is evicted
-            a.bar(1)  # Foo.bar(a, 1) is actually called cached and again.
+            a.bar(1)  # Foo.bar(a, 1) is actually called and cached again.
     """
     if _decoratee is None:
         return partial(memoize, size=size, duration=duration)
