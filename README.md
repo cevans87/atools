@@ -1,7 +1,7 @@
 [![Build Status](https://travis-ci.org/cevans87/atools.svg?branch=master&kill_cache=1)](https://travis-ci.org/cevans87/atools)
 [![Coverage Status](https://coveralls.io/repos/github/cevans87/atools/badge.svg?branch=master&kill_cache=1)](https://coveralls.io/github/cevans87/atools?branch=master)
 # atools
-Python 3.6+ async-enabled decorators and tools including
+Python 3.6+ decorators including
 
 - __memoize__ - a function decorator for sync and async functions that memoizes results.
 - __rate__ - a function decorator for sync and async functions that rate limits calls.
@@ -12,6 +12,8 @@ Python 3.6+ async-enabled decorators and tools including
     If 'size' is provided, memoize will only retain up to 'size' return values.
 
     If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
+
+    If 'gen_key' is provided, memoize will use the function to calculate the memoize hash key.
 
     Examples:
 
@@ -79,11 +81,21 @@ Python 3.6+ async-enabled decorators and tools including
             foo(2)
             len(foo.memoize)  # returns 2
 
+        - Memoization hash keys can be generated from a non-default function:
+            @memoize(gen_key=lambda a, b, c: (a, b, c))
+            def foo(a, b, c) -> Any: ...
+
+        - If part of the returned key from gen_key is awaitable, it will be awaited.
+            async def await_something() -> Hashable: ...
+
+            @memoize(gen_key=lambda bar: (bar, await_something()))
+            async def foo(bar) -> Any: ...
+
         - Properties can be memoized
             Class Foo:
                 @property
                 @memoize
-                def bar(self, baz): -> Any: ...
+                def bar(self): -> Any: ...
 
             a = Foo()
             a.bar  # Function actually called. Result cached.
@@ -96,11 +108,11 @@ Python 3.6+ async-enabled decorators and tools including
         - Be careful with eviction on methods.
             Class Foo:
                 @memoize(size=1)
-                def foo(self): -> Any: ...
+                def bar(self, baz): -> Any: ...
 
             a, b = Foo(), Foo()
-            a.bar(1)  # LRU cache order [Foo.bar(a)]
-            b.bar(1)  # LRU cache order [Foo.bar(b)], Foo.bar(a) is evicted
+            a.bar(1)  # LRU cache order [Foo.bar(a, 1)]
+            b.bar(1)  # LRU cache order [Foo.bar(b, 1)], Foo.bar(a, 1) is evicted
             a.bar(1)  # Foo.bar(a, 1) is actually called and cached again.
 
 ## rate                
