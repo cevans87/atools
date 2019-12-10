@@ -5,6 +5,7 @@ from atools import memoize
 from atools.memoize_decorator import reset_all
 from datetime import timedelta
 import pytest
+from typing import Hashable, Tuple
 from unittest.mock import call, MagicMock, patch
 from weakref import ref
 
@@ -19,6 +20,7 @@ def time() -> MagicMock:
 def sync_lock() -> MagicMock:
     with patch('atools.memoize_decorator.SyncLock', side_effect=None) as sync_lock:
         yield sync_lock
+
 
 @pytest.fixture
 def async_lock() -> MagicMock:
@@ -56,7 +58,7 @@ def test_class_function() -> None:
     f.foo()
     f.foo()
     body.assert_called_once()
-
+    
 
 def test_keyword_same_as_default() -> None:
     body = MagicMock()
@@ -557,3 +559,47 @@ def test_memoize_class_preserves_doc() -> None:
         """Foo doc"""
         
     assert Foo.__doc__ == "Foo doc"
+
+
+def test_gen_key_overrides_default() -> None:
+    body = MagicMock()
+
+    @memoize(gen_key=lambda bar, baz: (bar,))
+    def foo(bar: int, baz: int) -> int:
+        body(bar, baz)
+        
+        return bar + baz
+
+    assert foo(2, 2) == 4
+    # noinspection PyArgumentEqualDefault
+    assert foo(2, 200) == 4
+    body.assert_called_once_with(2, 2)
+
+
+@pytest.mark.asyncio
+async def test_gen_key_awaits_awaitable_parts() -> None:
+    
+    key_part_body = MagicMock()
+
+    async def key_part(bar: int, baz: int) -> Tuple[Hashable, ...]:
+        key_part_body(bar, baz)
+        
+        return bar,
+
+    body = MagicMock()
+    
+    @memoize(gen_key=lambda bar, baz: (key_part(bar, baz),))
+    async def foo(bar: int, baz: int) -> int:
+        body(bar, baz)
+
+        return bar + baz
+
+    assert await foo(2, 2) == 4
+    # noinspection PyArgumentEqualDefault
+    assert await foo(2, 200) == 4
+    body.assert_called_once_with(2, 2)
+    
+    assert key_part_body.call_count == 2
+    key_part_body.assert_has_calls(
+        [call(2, 2), call(2, 200)]
+    )

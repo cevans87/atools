@@ -6,10 +6,11 @@ from functools import partial, wraps
 import inspect
 from time import time
 from threading import Lock as SyncLock
-from typing import Any, Callable, Mapping, Optional, Type, Union
+from typing import Any, Callable, Hashable, Mapping, Optional, Tuple, Type, Union
 
 
 Decoratee = Union[Callable, Type]
+GenKey = Callable[..., Tuple[Any]]
 
 
 class _MemoZeroValue:
@@ -55,6 +56,7 @@ _Memo = Union[_AsyncMemo, _SyncMemo]
 @dataclass(frozen=True)
 class _MemoizeBase:
     fn: Callable
+    gen_key: Optional[GenKey]
     size: Optional[int]
     duration: Optional[timedelta]
     default_kwargs: Mapping[str, Any]
@@ -65,14 +67,14 @@ class _MemoizeBase:
     def __len__(self) -> int:
         return len(self.memos)
     
-    def make_key(self, *args, **kwargs) -> int:
+    def default_gen_key(self, *args, **kwargs) -> Tuple[Hashable, ...]:
         """Returns all params (args, kwargs, and missing default kwargs) for function as kwargs."""
         args_as_kwargs = {}
         for k, v in zip(self.default_kwargs, args):
             args_as_kwargs[k] = v
 
-        return hash(tuple(ChainMap(args_as_kwargs, kwargs, self.default_kwargs).values()))
-    
+        return tuple(ChainMap(args_as_kwargs, kwargs, self.default_kwargs).values())
+
     def get_memo(self, key: int) -> _Memo:
         try:
             memo = self.memos[key] = self.memos.pop(key)
@@ -92,14 +94,17 @@ class _MemoizeBase:
         return memo
 
     def expire_one_memo(self) -> None:
-        if self.expire_order is not None and \
-                len(self.expire_order) > 0 and \
-                self.memos[next(iter(self.expire_order))].expire_time < time():
+        if (
+                (self.expire_order is not None) and
+                (len(self.expire_order) > 0) and
+                (self.memos[next(iter(self.expire_order))].expire_time < time())
+        ):
             self.memos.pop(self.expire_order.popitem(last=False)[0])
         elif self.size is not None and self.size < len(self.memos):
             self.memos.popitem(last=False)
 
-    def make_memo(self, fn, expire_time: Optional[float]) -> _Memo:  # pragma: no cover
+    @staticmethod
+    def make_memo(fn, expire_time: Optional[float]) -> _Memo:  # pragma: no cover
         raise NotImplemented
     
     def reset(self) -> None:
@@ -109,12 +114,20 @@ class _MemoizeBase:
 
 @dataclass(frozen=True)
 class _AsyncMemoize(_MemoizeBase):
-    
+
     def get_decorator(self) -> Callable:
         async def decorator(*args, **kwargs) -> Any:
-            key = self.make_key(*args, **kwargs)
+            if self.gen_key is None:
+                key = self.default_gen_key(*args, **kwargs)
+            else:
+                key = self.gen_key(*args, **kwargs)
+                key = list(key)
+                for i, v in enumerate(key):
+                    if inspect.isawaitable(v):
+                        key[i] = await v
+                key = tuple(key)
 
-            memo: _AsyncMemo = self.get_memo(key)
+            memo: _AsyncMemo = self.get_memo(hash(key))
 
             self.expire_one_memo()
 
@@ -136,7 +149,8 @@ class _AsyncMemoize(_MemoizeBase):
 
         return decorator
 
-    def make_memo(self, fn, expire_time: Optional[float]) -> _AsyncMemo:
+    @staticmethod
+    def make_memo(fn, expire_time: Optional[float]) -> _AsyncMemo:
         return _AsyncMemo(fn=fn, expire_time=expire_time)
     
 
@@ -147,10 +161,13 @@ class _SyncMemoize(_MemoizeBase):
     
     def get_decorator(self) -> Callable:
         def decorator(*args, **kwargs):
-            key = self.make_key(*args, **kwargs)
+            if self.gen_key is None:
+                key = self.default_gen_key(*args, **kwargs)
+            else:
+                key = self.gen_key(*args, **kwargs)
 
             with self._sync_lock:
-                memo: _SyncMemo = self.get_memo(key)
+                memo: _SyncMemo = self.get_memo(hash(key))
 
             self.expire_one_memo()
 
@@ -172,7 +189,8 @@ class _SyncMemoize(_MemoizeBase):
                 
         return decorator
 
-    def make_memo(self, fn, expire_time: Optional[float]) -> _SyncMemo:
+    @staticmethod
+    def make_memo(fn, expire_time: Optional[float]) -> _SyncMemo:
         return _SyncMemo(fn=fn, expire_time=expire_time)
 
     def reset(self) -> None:
@@ -188,6 +206,7 @@ _all_decorators = set()
 def memoize(
     _decoratee: Optional[Decoratee] = None,
     *,
+    gen_key: Optional[GenKey] = None,
     size: Optional[int] = None,
     duration: Optional[Union[int, float, timedelta]] = None
 ):
@@ -196,6 +215,8 @@ def memoize(
     If 'size' is provided, memoize will only retain up to 'size' return values.
 
     If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
+
+    If 'gen_key' is provided, memoize will use the function to calculate the memoize hash key.
 
     Examples:
 
@@ -263,11 +284,21 @@ def memoize(
             foo(2)
             len(foo.memoize)  # returns 2
 
+        - Memoization hash keys can be generated from a non-default function:
+            @memoize(gen_key=lambda a, b, c: (a, b, c))
+            def foo(a, b, c) -> Any: ...
+
+        - If part of the returned key from gen_key is awaitable, it will be awaited.
+            async def await_something() -> Hashable: ...
+
+            @memoize(gen_key=lambda bar: (bar, await_something()))
+            async def foo(bar) -> Any: ...
+
         - Properties can be memoized
             Class Foo:
                 @property
                 @memoize
-                def bar(self, baz): -> Any: ...
+                def bar(self): -> Any: ...
 
             a = Foo()
             a.bar  # Function actually called. Result cached.
@@ -280,20 +311,20 @@ def memoize(
         - Be careful with eviction on methods.
             Class Foo:
                 @memoize(size=1)
-                def foo(self): -> Any: ...
+                def bar(self, baz): -> Any: ...
 
             a, b = Foo(), Foo()
-            a.bar(1)  # LRU cache order [Foo.bar(a)]
-            b.bar(1)  # LRU cache order [Foo.bar(b)], Foo.bar(a) is evicted
+            a.bar(1)  # LRU cache order [Foo.bar(a, 1)]
+            b.bar(1)  # LRU cache order [Foo.bar(b, 1)], Foo.bar(a, 1) is evicted
             a.bar(1)  # Foo.bar(a, 1) is actually called and cached again.
     """
     if _decoratee is None:
-        return partial(memoize, size=size, duration=duration)
+        return partial(memoize, duration=duration, gen_key=gen_key, size=size)
     
     if inspect.isclass(_decoratee):
         class WrappedMeta(type(_decoratee)):
             # noinspection PyMethodParameters
-            @memoize(size=size, duration=duration)
+            @memoize(duration=duration, size=size)
             def __call__(cls, *args, **kwargs):
                 return super().__call__(*args, **kwargs)
 
@@ -312,11 +343,19 @@ def memoize(
 
     if inspect.iscoroutinefunction(_decoratee):
         decorator = _AsyncMemoize(
-            fn=fn, size=size, duration=duration, default_kwargs=default_kwargs
+            default_kwargs=default_kwargs,
+            duration=duration,
+            fn=fn,
+            gen_key=gen_key,
+            size=size,
         ).get_decorator()
     else:
         decorator = _SyncMemoize(
-            fn=fn, size=size, duration=duration, default_kwargs=default_kwargs
+            default_kwargs=default_kwargs,
+            duration=duration,
+            fn=fn,
+            gen_key=gen_key,
+            size=size,
         ).get_decorator()
 
     _all_decorators.add(decorator)
