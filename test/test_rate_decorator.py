@@ -2,30 +2,27 @@ import asyncio
 from asyncio import coroutine, Event as AsyncEvent, gather
 from atools import rate
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
 import pytest
-import threading
 from threading import Event as SyncEvent
-from typing import Awaitable, Callable, Optional
-from unittest.mock import call, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 
 @pytest.fixture
 def time() -> MagicMock:
-    with patch('atools.rate_decorator.time') as time:
+    with patch('atools._rate_decorator.time') as time:
         time.return_value = 0
         yield time
 
 
 @pytest.fixture
 def async_sleep() -> MagicMock:
-    with patch('atools.rate_decorator.async_sleep') as async_sleep:
+    with patch('atools._rate_decorator.async_sleep') as async_sleep:
         yield async_sleep
 
 
 @pytest.fixture
 def sync_sleep() -> MagicMock:
-    with patch('atools.rate_decorator.sync_sleep') as sync_sleep:
+    with patch('atools._rate_decorator.sync_sleep') as sync_sleep:
         yield sync_sleep
 
 
