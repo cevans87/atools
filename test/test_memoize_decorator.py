@@ -2,30 +2,44 @@ from asyncio import (
     coroutine, ensure_future, Event, gather, get_event_loop, new_event_loop, set_event_loop
 )
 from atools import memoize
-from atools.memoize_decorator import reset_all
+import atools._memoize_decorator as test_module
 from datetime import timedelta
+from pathlib import Path
 import pytest
-from typing import Hashable, Tuple
+from sqlite3 import connect, Connection
+from tempfile import NamedTemporaryFile
+from typing import Callable, Hashable, Iterable, Tuple, Union
 from unittest.mock import call, MagicMock, patch
 from weakref import ref
 
 
 @pytest.fixture
-def time() -> MagicMock:
-    with patch('atools.memoize_decorator.time') as time:
-        yield time
+def async_lock() -> MagicMock:
+    with patch.object(test_module, 'AsyncLock', side_effect=None) as async_lock:
+        yield async_lock
+
+
+@pytest.fixture(params=[bool, connect, Path, str])
+def db(request) -> Union[bool, Connection, Path, str]:
+    with NamedTemporaryFile() as f:
+        if request.param is bool:
+            with patch.object(test_module, '_default_db_path') as default_db_path:
+                default_db_path.__str__.return_value = f.name
+                yield True
+        else:
+            yield request.param(f.name)
 
 
 @pytest.fixture
 def sync_lock() -> MagicMock:
-    with patch('atools.memoize_decorator.SyncLock', side_effect=None) as sync_lock:
+    with patch.object(test_module, 'SyncLock', side_effect=None) as sync_lock:
         yield sync_lock
 
 
 @pytest.fixture
-def async_lock() -> MagicMock:
-    with patch('atools.memoize_decorator.AsyncLock', side_effect=None) as async_lock:
-        yield async_lock
+def time() -> MagicMock:
+    with patch.object(test_module, 'time') as time:
+        yield time
 
 
 def test_zero_args() -> None:
@@ -182,12 +196,12 @@ def test_expire_current_call(time: MagicMock) -> None:
 
     time.return_value = 0.0
     foo()
-    time.return_value = timedelta(hours=23, minutes=59, seconds=59).total_seconds()
+    time.return_value = timedelta(hours=24, microseconds=-1).total_seconds()
     foo()
     body.assert_called_once()
     body.reset_mock()
 
-    time.return_value = timedelta(hours=24, seconds=1).total_seconds()
+    time.return_value = timedelta(hours=24, microseconds=1).total_seconds()
     foo()
     body.assert_called_once()
 
@@ -205,7 +219,7 @@ def test_expire_old_call(time: MagicMock) -> None:
     assert len(foo.memoize) == 1
     body.reset_mock()
 
-    time.return_value = timedelta(hours=24, seconds=1).total_seconds()
+    time.return_value = timedelta(hours=24, microseconds=1).total_seconds()
     foo(2)
     body.assert_called_once_with(2)
     assert len(foo.memoize) == 1
@@ -220,17 +234,15 @@ def test_expire_old_item_does_not_expire_new(time: MagicMock) -> None:
 
     time.return_value = 0.0
     foo()
-    body.assert_called_once_with()
-    body.reset_mock()
+    assert body.call_count == 1
 
     time.return_value = timedelta(hours=24, seconds=1).total_seconds()
     foo()
-    body.assert_called_once_with()
-    body.reset_mock()
+    assert body.call_count == 2
 
     time.return_value = timedelta(hours=24, seconds=2).total_seconds()
     foo()
-    body.assert_not_called()
+    assert body.call_count == 2
 
 
 def test_expire_head_of_line_refresh_does_not_stop_eviction(time: MagicMock) -> None:
@@ -476,7 +488,7 @@ def test_reset_all_resets_class_decorators() -> None:
     Bar()
     bar_body.assert_called_once()
 
-    reset_all()
+    memoize.reset_all()
     foo_body.reset_mock()
     bar_body.reset_mock()
 
@@ -503,7 +515,7 @@ def test_reset_all_resets_function_decorators() -> None:
     bar()
     bar_body.assert_called_once()
 
-    reset_all()
+    memoize.reset_all()
     foo_body.reset_mock()
     bar_body.reset_mock()
 
@@ -561,10 +573,10 @@ def test_memoize_class_preserves_doc() -> None:
     assert Foo.__doc__ == "Foo doc"
 
 
-def test_gen_key_overrides_default() -> None:
+def test_get_key_overrides_default() -> None:
     body = MagicMock()
 
-    @memoize(gen_key=lambda bar, baz: (bar,))
+    @memoize(get_key=lambda bar, baz: (bar,))
     def foo(bar: int, baz: int) -> int:
         body(bar, baz)
         
@@ -577,7 +589,7 @@ def test_gen_key_overrides_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gen_key_awaits_awaitable_parts() -> None:
+async def test_get_key_awaits_awaitable_parts() -> None:
     
     key_part_body = MagicMock()
 
@@ -587,8 +599,8 @@ async def test_gen_key_awaits_awaitable_parts() -> None:
         return bar,
 
     body = MagicMock()
-    
-    @memoize(gen_key=lambda bar, baz: (key_part(bar, baz),))
+
+    @memoize(get_key=lambda bar, baz: (key_part(bar, baz),))
     async def foo(bar: int, baz: int) -> int:
         body(bar, baz)
 
@@ -603,3 +615,143 @@ async def test_gen_key_awaits_awaitable_parts() -> None:
     key_part_body.assert_has_calls(
         [call(2, 2), call(2, 200)]
     )
+
+
+def test_db_creates_table_for_each_decorator(db: Union[bool, Connection, Path, str]) -> None:
+    
+    def get_table_len(_db) -> int:
+        if isinstance(_db, bool):
+            _db = connect(f'{test_module._default_db_path}')
+        elif isinstance(_db, (Path, str)):
+            _db = connect(f'{_db}')
+        # noinspection SqlResolve
+        return len(_db.execute("SELECT name FROM sqlite_master where type='table'").fetchall())
+
+    assert get_table_len(db) == 0
+
+    @memoize(db=db)
+    def foo() -> None:
+        ...
+
+    assert get_table_len(db) == 1
+
+    @memoize(db=db)
+    def bar() -> None:
+        ...
+
+    assert get_table_len(db) == 2
+
+
+def test_db_reloads_values_from_disk(db: Union[bool, Connection, Path, str]) -> None:
+    body = MagicMock()
+    
+    def foo() -> None:
+
+        @memoize(db=db)
+        def foo_inner() -> None:
+            body()
+
+        foo_inner()
+
+    foo()
+    foo()
+    
+    assert body.call_count == 1
+
+
+def test_reset_removes_values_on_disk(db: Union[bool, Connection, Path, str]) -> None:
+    body = MagicMock()
+
+    def foo() -> None:
+        @memoize(db=db)
+        def foo_inner() -> None:
+            body()
+
+        foo_inner()
+        foo_inner.memoize.reset()
+
+    foo()
+    foo()
+
+    assert body.call_count == 2
+
+
+def test_db_expires_memo(db: Union[bool, Connection, Path, str], time: MagicMock) -> None:
+    body = MagicMock()
+
+    def foo() -> None:
+        @memoize(db=db, duration=timedelta(days=1))
+        def foo_inner() -> None:
+            body()
+
+        foo_inner()
+
+    time.return_value = 0.0
+    foo()
+    time.return_value = timedelta(hours=24, seconds=1).total_seconds()
+    foo()
+
+    assert body.call_count == 2
+
+
+def test_db_memoizes_multiple_values(db: Union[bool, Connection, Path, str]) -> None:
+    body = MagicMock()
+
+    def get_foo() -> Callable[[int], None]:
+        @memoize(db=db)
+        def _foo(_i: int) -> None:
+            body(_i)
+
+        return _foo
+
+    foo = get_foo()
+    for i in range(10):
+        foo(i)
+    assert len(foo.memoize) == 10
+    
+    foo = get_foo()
+    assert len(foo.memoize) == 10
+
+
+def test_db_with_size_expires_lru(db: Union[bool, Connection, Path, str]) -> None:
+    body = MagicMock()
+
+    def foo(it: Iterable[int]) -> None:
+        @memoize(db=db, size=5)
+        def foo_inner(_i: int) -> None:
+            body(_i)
+
+        for i in it:
+            foo_inner(i)
+
+    foo(range(10))
+    assert body.call_count == 10
+    foo(reversed(range(10)))
+    assert body.call_count == 15
+    
+    
+def test_db_with_duration_expires_stale_values(
+        db: Union[bool, Connection, Path, str],
+        time: MagicMock,
+) -> None:
+    body = MagicMock()
+
+    def foo(it: Iterable[int]) -> None:
+        @memoize(db=db, duration=timedelta(hours=1))
+        def foo_inner(_i: int) -> None:
+            body(_i)
+
+        for i in it:
+            foo_inner(i)
+
+    time.return_value = 0.0
+    foo(range(10))
+    assert body.call_count == 10
+
+    time.return_value = timedelta(hours=1, microseconds=-1).total_seconds()
+    foo(range(10))
+    assert body.call_count == 10
+
+    time.return_value = timedelta(hours=1, microseconds=1).total_seconds()
+    foo(range(10))
+    assert body.call_count == 20

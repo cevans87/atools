@@ -9,11 +9,13 @@ Python 3.6+ decorators including
 ## memoize
     Decorates a function call and caches return value for given inputs.
 
+    If 'db' is provided, memoized values will be saved to disk and reloaded during initialization.
+
+    If 'duration' is provided, memoize will only retain return values for up to given 'duration'.
+
+    If 'get_key' is provided, memoize will use the function to calculate the memoize hash key.
+
     If 'size' is provided, memoize will only retain up to 'size' return values.
-
-    If 'expire' is provided, memoize will only retain return values for up to 'expire' duration.
-
-    If 'gen_key' is provided, memoize will use the function to calculate the memoize hash key.
 
     Examples:
 
@@ -82,13 +84,13 @@ Python 3.6+ decorators including
             len(foo.memoize)  # returns 2
 
         - Memoization hash keys can be generated from a non-default function:
-            @memoize(gen_key=lambda a, b, c: (a, b, c))
+            @memoize(get_key=lambda a, b, c: (a, b, c))
             def foo(a, b, c) -> Any: ...
 
-        - If part of the returned key from gen_key is awaitable, it will be awaited.
+        - If part of the returned key from get_key is awaitable, it will be awaited.
             async def await_something() -> Hashable: ...
 
-            @memoize(gen_key=lambda bar: (bar, await_something()))
+            @memoize(get_key=lambda bar: (bar, await_something()))
             async def foo(bar) -> Any: ...
 
         - Properties can be memoized
@@ -115,7 +117,66 @@ Python 3.6+ decorators including
             b.bar(1)  # LRU cache order [Foo.bar(b, 1)], Foo.bar(a, 1) is evicted
             a.bar(1)  # Foo.bar(a, 1) is actually called and cached again.
 
-## rate                
+        - The default memoize key generator can be overridden. The inputs must match the function's.
+            Class Foo:
+                @memoize(get_key=lambda self, a, b, c: (a, b, c))
+                def bar(self, a, b, c) -> Any: ...
+
+            a, b = Foo(), Foo()
+
+            # Hash key will be (a, b, c)
+            a.bar(1, 2, 3)  # LRU cache order [Foo.bar(a, 1, 2, 3)]
+
+            # Hash key will again be (a, b, c)
+            # Be aware, in this example the returned result comes from a.bar(...), not b.bar(...).
+            b.bar(1, 2, 3)  # Function not called. Previously-cached result returned.
+
+        - If the memoized function is async and any part of the key is awaitable, it is awaited.
+            async def morph_a(a: int) -> int: ...
+
+            @memoize(get_key=lambda a, b, c: (morph_a(a), b, c))
+            def foo(a, b, c) -> Any: ...
+
+        - Values can persist to disk and be reloaded when memoize is initialized again.
+
+            @memoize(db=True)
+            def foo(a) -> Any: ...
+
+            foo(1)  # Function actually called. Result cached.
+
+            # Process is restarted. Upon restart, the state of the memoize decorator is reloaded.
+
+            foo(1)  # Function not called. Previously-cached result returned.
+
+        - Be careful with 'db' and memoize values that don't hash consistently upon process restart.
+
+            class Foo:
+                @classmethod
+                @memoize(db=True)
+                def bar(cls, a) -> Any: ...
+
+            Foo.bar(1)  # Function actually called. Result cached.
+            Foo.bar(1)  # Function not called. Previously-cached result returned.
+
+            # Process is restarted. Upon restart, the state of the memoize decorator is reloaded.
+
+            # Hash value of 'cls', is now different.
+            Foo.bar(1)  # Function actually called. Result cached.
+
+            # You can create a consistent hash key to avoid this.
+            class Foo:
+                @classmethod
+                @memoize(db=True, get_key=lambda cls: (f'{cls.__package__}:{cls.__name__}', a))
+                def bar(cls, a) -> Any: ...
+
+        - Alternative location of 'db' can also be given as pathlib.Path or str.
+            @memoize(db=Path.home() / 'foo_memoize')
+            def foo() -> Any: ...
+
+            @memoize(db='~/bar_memoize')
+            def bar() -> Any: ...
+
+## rate
     Function decorator that rate limits the number of calls to function.
 
     'size' must be provided. It specifies the maximum number of calls that may be made concurrently
