@@ -1,4 +1,3 @@
-from ast import literal_eval
 from asyncio import Lock as AsyncLock
 from collections import ChainMap, OrderedDict
 from dataclasses import dataclass, field
@@ -94,7 +93,7 @@ class _MemoizeBase:
                     )
                 )
                 memo.memo_return_state.called = True
-                (memo.memo_return_state.value,) = literal_eval(v)
+                (memo.memo_return_state.value,) = eval(v, __builtins__)
                 self.memos[k] = memo
             if self.duration:
                 for k, e in self.db.execute(
@@ -162,7 +161,7 @@ class _MemoizeBase:
         else:
             if self.db is not None:
                 value = str((memo.memo_return_state.value,))
-                assert (memo.memo_return_state.value,) == literal_eval(value)
+                assert (memo.memo_return_state.value,) == eval(value, __builtins__)
                 self.db.execute(
                     dedent(f'''
                         INSERT OR REPLACE INTO `{self.table_name}`

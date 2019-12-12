@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from sqlite3 import connect, Connection
 from tempfile import NamedTemporaryFile
-from typing import Callable, Hashable, Iterable, Tuple, Union
+from typing import Callable, FrozenSet, Hashable, Iterable, Tuple, Union
 from unittest.mock import call, MagicMock, patch
 from weakref import ref
 
@@ -755,3 +755,21 @@ def test_db_with_duration_expires_stale_values(
     time.return_value = timedelta(hours=1, microseconds=1).total_seconds()
     foo(range(10))
     assert body.call_count == 20
+
+
+def test_db_memoizes_frozenset(db: Union[bool, Connection, Path, str]) -> None:
+    body = MagicMock()
+
+    def foo() -> FrozenSet[int]:
+        @memoize(db=db)
+        def foo_inner() -> FrozenSet[int]:
+            body()
+            return frozenset({1, 2, 3})
+
+        return foo_inner()
+
+    assert foo() == frozenset({1, 2, 3})
+    assert body.call_count == 1
+
+    assert foo() == frozenset({1, 2, 3})
+    assert body.call_count == 1
