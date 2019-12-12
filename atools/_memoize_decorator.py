@@ -3,6 +3,7 @@ from collections import ChainMap, OrderedDict
 from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import partial, wraps
+from hashlib import sha256
 import inspect
 from pathlib import Path
 from sqlite3 import connect, Connection
@@ -65,7 +66,7 @@ class _MemoizeBase:
         if self.db is not None:
             self.db.execute(dedent(f'''
                 CREATE TABLE IF NOT EXISTS `{self.table_name}` (
-                  k integer PRIMARY KEY,
+                  k TEXT PRIMARY KEY,
                   t FLOAT,
                   e FLOAT,
                   v TEXT NOT NULL
@@ -152,7 +153,7 @@ class _MemoizeBase:
         elif self.size is not None and self.size < len(self.memos):
             (k, _) = self.memos.popitem(last=False)
         if (self.db is not None) and (k is not None):
-            self.db.execute(f"DELETE FROM `{self.table_name}` WHERE k = {k}")
+            self.db.execute(f"DELETE FROM `{self.table_name}` WHERE k = '{k}'")
             self.db.commit()
 
     def finalize_memo(self, memo: _Memo, key: int) -> Any:
@@ -206,7 +207,7 @@ class _AsyncMemoize(_MemoizeBase):
                         key[i] = await v
                 key = tuple(key)
 
-            key = hash(key)
+            key = sha256(str(key).encode()).hexdigest()
 
             memo: _AsyncMemo = self.get_memo(key)
 
@@ -244,7 +245,7 @@ class _SyncMemoize(_MemoizeBase):
             else:
                 key = self.get_key(*args, **kwargs)
 
-            key = hash(key)
+            key = sha256(str(key).encode()).hexdigest()
 
             with self._sync_lock:
                 memo: _SyncMemo = self.get_memo(key)
