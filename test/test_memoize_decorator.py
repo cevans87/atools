@@ -573,10 +573,10 @@ def test_memoize_class_preserves_doc() -> None:
     assert Foo.__doc__ == "Foo doc"
 
 
-def test_get_key_overrides_default() -> None:
+def test_keygen_overrides_default() -> None:
     body = MagicMock()
 
-    @memoize(get_key=lambda bar, baz: (bar,))
+    @memoize(keygen=lambda bar, baz: (bar,))
     def foo(bar: int, baz: int) -> int:
         body(bar, baz)
         
@@ -589,7 +589,7 @@ def test_get_key_overrides_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_key_awaits_awaitable_parts() -> None:
+async def test_keygen_awaits_awaitable_parts() -> None:
     
     key_part_body = MagicMock()
 
@@ -600,7 +600,7 @@ async def test_get_key_awaits_awaitable_parts() -> None:
 
     body = MagicMock()
 
-    @memoize(get_key=lambda bar, baz: (key_part(bar, baz),))
+    @memoize(keygen=lambda bar, baz: (key_part(bar, baz),))
     async def foo(bar: int, baz: int) -> int:
         body(bar, baz)
 
@@ -773,3 +773,78 @@ def test_db_memoizes_frozenset(db: Union[bool, Connection, Path, str]) -> None:
 
     assert foo() == frozenset({1, 2, 3})
     assert body.call_count == 1
+
+
+def test_sync_reset_call_resets_one() -> None:
+    body = MagicMock()
+
+    @memoize
+    def foo(bar: int) -> None:
+        body(bar)
+
+    for i in range(10):
+        foo(i)
+    assert body.call_count == 10
+
+    foo.memoize.reset_call(5)
+    for i in range(10):
+        foo(i)
+    assert body.call_count == 11
+
+
+def test_reset_call_before_expire_resets_one(time: MagicMock) -> None:
+    body = MagicMock()
+
+    @memoize(duration=timedelta(days=1))
+    def foo(bar: int) -> None:
+        body(bar)
+
+    time.return_value = 0.0
+    foo(0)
+    foo(0)
+    assert body.call_count == 1
+
+    foo.memoize.reset_call(0)
+    foo(0)
+    foo(0)
+    assert body.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_async_reset_call_resets_call() -> None:
+    body = MagicMock()
+
+    @memoize
+    async def foo(bar: int) -> None:
+        body(bar)
+
+    for i in range(10):
+        await foo(i)
+    assert body.call_count == 10
+
+    await foo.memoize.reset_call(5)
+    for i in range(10):
+        await foo(i)
+    assert body.call_count == 11
+
+
+def test_reset_call_with_db_resets_call(db: Union[bool, Connection, Path, str]) -> None:
+    body = MagicMock()
+
+    def get_foo() -> Callable[[int], None]:
+        @memoize(db=db)
+        def foo(_i: int) -> None:
+            body(_i)
+
+        return foo
+
+    foo = get_foo()
+    for i in range(10):
+        foo(i)
+    assert body.call_count == 10
+
+    foo = get_foo()
+    foo.memoize.reset_call(5)
+    for i in range(10):
+        foo(i)
+    assert body.call_count == 11
