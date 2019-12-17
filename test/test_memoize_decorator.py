@@ -9,8 +9,17 @@ import pytest
 from sqlite3 import connect, Connection
 from tempfile import NamedTemporaryFile
 from typing import Callable, FrozenSet, Hashable, Iterable, Tuple, Union
-from unittest.mock import call, MagicMock, patch
+from unittest.mock import call, MagicMock, patch, PropertyMock
 from weakref import ref
+
+
+def get_table_len(db) -> int:
+    if isinstance(db, bool):
+        db = connect(f'{memoize._default_db_path}')
+    elif isinstance(db, (Path, str)):
+        db = connect(f'{db}')
+    # noinspection SqlResolve
+    return len(db.execute("SELECT name FROM sqlite_master where type='table'").fetchall())
 
 
 @pytest.fixture
@@ -23,8 +32,10 @@ def async_lock() -> MagicMock:
 def db(request) -> Union[bool, Connection, Path, str]:
     with NamedTemporaryFile() as f:
         if request.param is bool:
-            with patch.object(test_module, '_default_db_path') as default_db_path:
-                default_db_path.__str__.return_value = f.name
+            with patch.object(
+                    type(memoize), '_default_db_path', new_callable=PropertyMock
+            ) as default_db_path:
+                default_db_path.return_value = Path(f.name)
                 yield True
         else:
             yield request.param(f.name)
@@ -619,14 +630,6 @@ async def test_keygen_awaits_awaitable_parts() -> None:
 
 def test_db_creates_table_for_each_decorator(db: Union[bool, Connection, Path, str]) -> None:
     
-    def get_table_len(_db) -> int:
-        if isinstance(_db, bool):
-            _db = connect(f'{test_module._default_db_path}')
-        elif isinstance(_db, (Path, str)):
-            _db = connect(f'{_db}')
-        # noinspection SqlResolve
-        return len(_db.execute("SELECT name FROM sqlite_master where type='table'").fetchall())
-
     assert get_table_len(db) == 0
 
     @memoize(db=db)
@@ -848,3 +851,16 @@ def test_reset_call_with_db_resets_call(db: Union[bool, Connection, Path, str]) 
     for i in range(10):
         foo(i)
     assert body.call_count == 11
+
+
+def test_set_default_db_path_uses_given_path() -> None:
+    with NamedTemporaryFile() as f, patch.object(type(memoize), '_default_db_path'):
+        memoize.set_default_db_path(f.name)
+
+        assert get_table_len(f.name) == 0
+
+        @memoize(db=True)
+        def foo():
+            ...
+
+        assert get_table_len(f.name) == 1
