@@ -16,8 +16,6 @@ from typing import Any, Callable, Hashable, Mapping, Optional, Tuple, Type, Unio
 Decoratee = Union[Callable, Type]
 Keygen = Callable[..., Tuple[Any]]
 
-_default_db_path = Path.home() / '.memoize'
-
 
 class _MemoZeroValue:
     pass
@@ -310,19 +308,7 @@ class _SyncMemoize(_MemoizeBase):
             self.reset_key(key)
 
 
-_Memoize = Union[_AsyncMemoize, _SyncMemoize]
-
-_all_decorators = set()
-
-
-def memoize(
-    _decoratee: Optional[Decoratee] = None,
-    *,
-    db: Union[bool, Path, str] = False,
-    duration: Optional[Union[int, float, timedelta]] = None,
-    keygen: Optional[Keygen] = None,
-    size: Optional[int] = None,
-):
+class _Memoize:
     """Decorates a function call and caches return value for given inputs.
 
     If 'db' is provided, memoized values will be saved to disk and reloaded during initialization.
@@ -492,62 +478,79 @@ def memoize(
             @memoize(db='~/bar_memoize')
             def bar() -> Any: ...
     """
-    if _decoratee is None:
-        return partial(memoize, db=db, duration=duration, keygen=keygen, size=size)
-    
-    if inspect.isclass(_decoratee):
-        assert not db, 'Class memoization not allowed with db.'
 
-        class WrappedMeta(type(_decoratee)):
-            # noinspection PyMethodParameters
-            @memoize(duration=duration, size=size)
-            def __call__(cls, *args, **kwargs):
-                return super().__call__(*args, **kwargs)
+    _default_db_path = Path.home() / '.memoize'
+    _all_decorators = set()
 
-        class Wrapped(_decoratee, metaclass=WrappedMeta):
-            pass
+    @staticmethod
+    def __call__(
+            _decoratee: Optional[Decoratee] = None,
+            *,
+            db: Union[bool, Path, str] = False,
+            duration: Optional[Union[int, float, timedelta]] = None,
+            keygen: Optional[Keygen] = None,
+            size: Optional[int] = None,
+    ):
+        if _decoratee is None:
+            return partial(memoize, db=db, duration=duration, keygen=keygen, size=size)
 
-        return type(_decoratee.__name__, (Wrapped,), {'__doc__': _decoratee.__doc__})
+        if inspect.isclass(_decoratee):
+            assert not db, 'Class memoization not allowed with db.'
 
-    if isinstance(db, (str, Path)):
-        db = connect(f'{db}')
-    elif isinstance(db, bool):
-        if db:
-            db = connect(f'{_default_db_path}')
+            class WrappedMeta(type(_decoratee)):
+                # noinspection PyMethodParameters
+                @memoize(duration=duration, size=size)
+                def __call__(cls, *args, **kwargs):
+                    return super().__call__(*args, **kwargs)
+
+            class Wrapped(_decoratee, metaclass=WrappedMeta):
+                pass
+
+            return type(_decoratee.__name__, (Wrapped,), {'__doc__': _decoratee.__doc__})
+
+        if isinstance(db, (str, Path)):
+            db = connect(f'{db}')
+        elif isinstance(db, bool):
+            if db:
+                db = connect(f'{_Memoize._default_db_path}')
+            else:
+                db = None
+
+        duration = timedelta(seconds=duration) if isinstance(duration, (int, float)) else duration
+        assert (duration is None) or (duration.total_seconds() > 0)
+        assert (size is None) or (size > 0)
+        fn = _decoratee
+        default_kwargs: Mapping[str, Any] = {
+            k: v.default for k, v in inspect.signature(fn).parameters.items()
+        }
+
+        if inspect.iscoroutinefunction(_decoratee):
+            decorator_cls = _AsyncMemoize
         else:
-            db = None
+            decorator_cls = _SyncMemoize
 
-    duration = timedelta(seconds=duration) if isinstance(duration, (int, float)) else duration
-    assert (duration is None) or (duration.total_seconds() > 0)
-    assert (size is None) or (size > 0)
-    fn = _decoratee
-    default_kwargs: Mapping[str, Any] = {
-        k: v.default for k, v in inspect.signature(fn).parameters.items()
-    }
+        # noinspection PyArgumentList
+        decorator = decorator_cls(
+            db=db,
+            default_kwargs=default_kwargs,
+            duration=duration,
+            fn=fn,
+            keygen=keygen,
+            size=size,
+        ).get_decorator()
 
-    if inspect.iscoroutinefunction(_decoratee):
-        decorator_cls = _AsyncMemoize
-    else:
-        decorator_cls = _SyncMemoize
+        _Memoize._all_decorators.add(decorator)
 
-    # noinspection PyArgumentList
-    decorator = decorator_cls(
-        db=db,
-        default_kwargs=default_kwargs,
-        duration=duration,
-        fn=fn,
-        keygen=keygen,
-        size=size,
-    ).get_decorator()
+        return wraps(_decoratee)(decorator)
 
-    _all_decorators.add(decorator)
-    
-    return wraps(_decoratee)(decorator)
+    @staticmethod
+    def reset_all() -> None:
+        for decorator in _Memoize._all_decorators:
+            decorator.memoize.reset()
+
+    @staticmethod
+    def set_default_db_path(path: Union[Path, str]) -> None:
+        _Memoize._default_db_path = Path(f'{path}')
 
 
-def reset_all() -> None:
-    for decorator in _all_decorators:
-        decorator.memoize.reset()
-
-
-memoize.reset_all = reset_all
+memoize = _Memoize()
