@@ -14,7 +14,7 @@ from typing import Any, Callable, Hashable, Mapping, Optional, Tuple, Type, Unio
 
 
 Decoratee = Union[Callable, Type]
-Keygen = Callable[..., Tuple[Any]]
+Keygen = Callable[..., Any]
 
 
 class _MemoZeroValue:
@@ -213,7 +213,11 @@ class _AsyncMemoize(_MemoizeBase):
             key = self.default_keygen(*args, **kwargs)
         else:
             key = self.keygen(*args, **kwargs)
-            key = list(key)
+            if isinstance(key, tuple):
+                key = list(key)
+            else:
+                key = [key]
+
             for i, v in enumerate(key):
                 if inspect.isawaitable(v):
                     key[i] = await v

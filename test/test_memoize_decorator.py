@@ -864,3 +864,19 @@ def test_set_default_db_path_uses_given_path() -> None:
             ...
 
         assert get_table_len(f.name) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_keygen_can_return_non_tuple() -> None:
+    body = MagicMock()
+
+    def keygen() -> int:
+        return 1
+
+    @memoize(keygen=lambda: keygen())
+    async def foo():
+        body()
+
+    await foo()
+    await foo()
+    assert body.call_count == 1
