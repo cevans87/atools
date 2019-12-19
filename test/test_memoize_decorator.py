@@ -4,7 +4,7 @@ from asyncio import (
 from atools import memoize
 import atools._memoize_decorator as test_module
 from datetime import timedelta
-from pathlib import Path
+from pathlib import Path, PosixPath
 import pytest
 from sqlite3 import connect, Connection
 from tempfile import NamedTemporaryFile
@@ -572,6 +572,7 @@ async def test_memoize_does_not_stop_object_cleanup() -> None:
     r = ref(f)
     assert r() is not None
     del f
+    # FIXME there's a race condition here. Garbage collector may not have cleaned up f yet
     assert r() is None
 
 
@@ -860,7 +861,7 @@ def test_set_default_db_path_uses_given_path() -> None:
         assert get_table_len(f.name) == 0
 
         @memoize(db=True)
-        def foo():
+        def foo() -> None:
             ...
 
         assert get_table_len(f.name) == 1
@@ -874,9 +875,31 @@ async def test_async_keygen_can_return_non_tuple() -> None:
         return 1
 
     @memoize(keygen=lambda: keygen())
-    async def foo():
+    async def foo() -> None:
         body()
 
     await foo()
     await foo()
     assert body.call_count == 1
+
+
+def test_db_can_return_type_of_return_hint(db: Union[bool, Connection, Path, str]) -> None:
+    class FooPath(PosixPath):
+        pass
+
+    @memoize(db=db)
+    def foo() -> FooPath:
+        return FooPath.cwd()
+
+    assert foo() == FooPath.cwd()
+    assert isinstance(foo(), FooPath)
+
+
+def test_db_can_return_type_of_callers_globals(db: Union[bool, Connection, Path, str]) -> None:
+
+    @memoize(db=db)
+    def foo():
+        return PosixPath.cwd()
+
+    assert foo() == PosixPath.cwd()
+    assert isinstance(foo(), PosixPath)

@@ -10,7 +10,7 @@ from sqlite3 import connect, Connection
 from textwrap import dedent
 from time import time
 from threading import Lock as SyncLock
-from typing import Any, Callable, Hashable, Mapping, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, Hashable, Mapping, Optional, Tuple, Type, Union
 
 
 Decoratee = Union[Callable, Type]
@@ -57,11 +57,22 @@ class _MemoizeBase:
     keygen: Optional[Keygen]
     size: Optional[int]
 
+    db_eval_types: Optional[Dict[str, Any]] = field(init=False, default=None, hash=False)
     expire_order: OrderedDict = field(init=False, default_factory=OrderedDict, hash=False)
     memos: OrderedDict = field(init=False, default_factory=OrderedDict, hash=False)
 
     def __post_init__(self) -> None:
         if self.db is not None:
+            return_annotation = inspect.signature(self.fn).return_annotation
+            if not hasattr(return_annotation, '__name__'):
+                object.__setattr__(self, 'db_eval_types', dict(self.fn.__globals__))
+            else:
+                object.__setattr__(
+                    self,
+                    'db_eval_types',
+                    {**self.fn.__globals__, return_annotation.__name__: return_annotation}
+                )
+
             self.db.execute(dedent(f'''
                 CREATE TABLE IF NOT EXISTS `{self.table_name}` (
                   k TEXT PRIMARY KEY,
@@ -88,7 +99,7 @@ class _MemoizeBase:
             ).fetchall():
                 memo = self.make_memo(fn=self.fn, t0=t0)
                 memo.memo_return_state.called = True
-                (memo.memo_return_state.value,) = eval(v, __builtins__)
+                (memo.memo_return_state.value,) = eval(v, self.db_eval_types)
                 self.memos[k] = memo
             if self.duration:
                 for k, t0 in self.db.execute(
@@ -159,7 +170,7 @@ class _MemoizeBase:
         else:
             if (self.db is not None) and (self.memos[key] is memo):
                 value = str((memo.memo_return_state.value,))
-                assert (memo.memo_return_state.value,) == eval(value, __builtins__)
+                assert (memo.memo_return_state.value,) == eval(value, self.db_eval_types)
                 self.db.execute(
                     dedent(f'''
                         INSERT OR REPLACE INTO `{self.table_name}`
