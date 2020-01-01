@@ -63,6 +63,7 @@ class _MemoizeBase:
 
     def __post_init__(self) -> None:
         if self.db is not None:
+            self.db.isolation_level = None
             return_annotation = inspect.signature(self.fn).return_annotation
             if not hasattr(return_annotation, '__name__'):
                 object.__setattr__(self, 'db_eval_types', dict(self.fn.__globals__))
@@ -106,7 +107,6 @@ class _MemoizeBase:
                         f"SELECT k, t0 FROM `{self.table_name}` ORDER BY t0"
                 ).fetchall():
                     self.expire_order[k] = ...
-            self.db.commit()
 
     def __len__(self) -> int:
         return len(self.memos)
@@ -162,7 +162,6 @@ class _MemoizeBase:
             (k, _) = self.memos.popitem(last=False)
         if (self.db is not None) and (k is not None):
             self.db.execute(f"DELETE FROM `{self.table_name}` WHERE k = '{k}'")
-            self.db.commit()
 
     def finalize_memo(self, memo: _Memo, key: Union[int, str]) -> Any:
         if memo.memo_return_state.raised:
@@ -185,7 +184,6 @@ class _MemoizeBase:
                         value
                     )
                 )
-                self.db.commit()
             return memo.memo_return_state.value
 
     def get_hashed_key(self, key: Tuple[Hashable]) -> Union[int, str]:
@@ -205,7 +203,6 @@ class _MemoizeBase:
         object.__setattr__(self, 'memos', OrderedDict())
         if self.db is not None:
             self.db.execute(f"DELETE FROM `{self.table_name}`")
-            self.db.commit()
 
     def reset_key(self, key: Union[int, str]) -> None:
         if key in self.memos:
