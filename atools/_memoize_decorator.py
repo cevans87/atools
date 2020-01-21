@@ -11,6 +11,7 @@ from textwrap import dedent
 from time import time
 from threading import Lock as SyncLock
 from typing import Any, Callable, Dict, Hashable, Mapping, Optional, Tuple, Type, Union
+from weakref import WeakSet
 
 
 Decoratee = Union[Callable, Type]
@@ -492,7 +493,7 @@ class _Memoize:
     """
 
     _default_db_path = Path.home() / '.memoize'
-    _all_decorators = set()
+    _all_decorators = WeakSet()
 
     @staticmethod
     def __call__(
