@@ -123,11 +123,14 @@ class _MemoizeBase:
 
     def default_keygen(self, *args, **kwargs) -> Tuple[Hashable, ...]:
         """Returns all params (args, kwargs, and missing default kwargs) for function as kwargs."""
+
+        return tuple(self.get_args_as_kwargs(*args, **kwargs).values())
+
+    def get_args_as_kwargs(self, *args, **kwargs) -> Mapping[str, Any]:
         args_as_kwargs = {}
         for k, v in zip(self.default_kwargs, args):
             args_as_kwargs[k] = v
-
-        return tuple(ChainMap(args_as_kwargs, kwargs, self.default_kwargs).values())
+        return ChainMap(args_as_kwargs, kwargs, self.default_kwargs)
 
     def get_memo(self, key: Union[int, str]) -> _Memo:
         try:
@@ -221,7 +224,7 @@ class _AsyncMemoize(_MemoizeBase):
         if self.keygen is None:
             key = self.default_keygen(*args, **kwargs)
         else:
-            key = self.keygen(*args, **kwargs)
+            key = self.keygen(**self.get_args_as_kwargs(*args, **kwargs))
             if isinstance(key, tuple):
                 key = list(key)
             else:
@@ -277,7 +280,7 @@ class _SyncMemoize(_MemoizeBase):
         if self.keygen is None:
             key = self.default_keygen(*args, **kwargs)
         else:
-            key = self.keygen(*args, **kwargs)
+            key = self.keygen(**self.get_args_as_kwargs(*args, **kwargs))
 
         key = self.get_hashed_key(key)
 

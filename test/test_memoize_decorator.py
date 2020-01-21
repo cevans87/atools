@@ -919,3 +919,11 @@ def test_memoized_function_is_deletable() -> None:
     del foo
     # FIXME there's a race condition here. Garbage collector may not have cleaned up foo yet
     assert r() is None
+
+
+def test_keygen_works_with_default_kwargs() -> None:
+    @memoize(keygen=lambda bar: bar)
+    def foo(bar=1) -> None:
+        ...
+
+    foo()
