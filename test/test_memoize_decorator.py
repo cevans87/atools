@@ -903,3 +903,19 @@ def test_db_can_return_type_of_callers_globals(db: Union[bool, Connection, Path,
 
     assert foo() == PosixPath.cwd()
     assert isinstance(foo(), PosixPath)
+
+
+def test_memoized_function_is_deletable() -> None:
+    def get_foo() -> Callable[[], None]:
+        @memoize
+        def _foo() -> None:
+            ...
+
+        return _foo
+
+    foo = get_foo()
+    r = ref(foo)
+    assert r() is not None
+    del foo
+    # FIXME there's a race condition here. Garbage collector may not have cleaned up foo yet
+    assert r() is None
