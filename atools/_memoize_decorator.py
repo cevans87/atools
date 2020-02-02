@@ -484,7 +484,7 @@ class _Memoize:
             # You can create a consistent hash key to avoid this.
             class Foo:
                 @classmethod
-                @memoize(db=True, keygen=lambda cls: (f'{cls.__package__}:{cls.__name__}', a))
+                @memoize(db=True, keygen=lambda cls, a: (f'{cls.__package__}:{cls.__name__}', a))
                 def bar(cls, a) -> Any: ...
 
         - Alternative location of 'db' can also be given as pathlib.Path or str.
