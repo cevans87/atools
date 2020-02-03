@@ -1,3 +1,4 @@
+import warnings
 from asyncio import Lock as AsyncLock
 from collections import ChainMap, OrderedDict
 from dataclasses import dataclass, field
@@ -61,6 +62,8 @@ class _MemoizeBase:
     db_eval_types: Optional[Dict[str, Any]] = field(init=False, default=None, hash=False)
     expire_order: OrderedDict = field(init=False, default_factory=OrderedDict, hash=False)
     memos: OrderedDict = field(init=False, default_factory=OrderedDict, hash=False)
+
+    _has_checked_keygen: bool = False
 
     def __post_init__(self) -> None:
         if self.db is not None:
@@ -190,7 +193,29 @@ class _MemoizeBase:
                 )
             return memo.memo_return_state.value
 
-    def get_hashed_key(self, key: Tuple[Hashable]) -> Union[int, str]:
+    def get_hashed_key(self, key: Union[Hashable, Tuple[Hashable]]) -> Union[int, str]:
+        # Make a best-effort attempt to warn developers if they use a keygen
+        # function that relies on the default hash implementation for object.
+        if not self._has_checked_keygen:
+            if isinstance(key, tuple):
+                for component in key:
+                    # The default  __hash__ implementation can re-use hash values
+                    # if the original object is deleted.
+                    if hasattr(type(component), "__hash__") and type(component).__hash__ == object.__hash__:
+                        warnings.warn(
+                            "`{}` is memoized with {} objects in the cache key. "
+                            "However, {} uses the default hash function for "
+                            "objects, which can produce duplicate cache lookups "
+                            "in any given Python process. Consider adding a "
+                            "custom __hash__ method to that class".format(
+                                self.fn.__name__,
+                                type(component).__name__,
+                                type(component).__name__,
+                            )
+                        )
+
+            object.__setattr__(self, '_has_checked_keygen', True)
+
         if self.db is None:
             key = hash(key)
         else:

@@ -83,7 +83,7 @@ def test_class_function() -> None:
     f.foo()
     f.foo()
     body.assert_called_once()
-    
+
 
 def test_keyword_same_as_default() -> None:
     body = MagicMock()
@@ -581,7 +581,7 @@ def test_memoize_class_preserves_doc() -> None:
     @memoize
     class Foo:
         """Foo doc"""
-        
+
     assert Foo.__doc__ == "Foo doc"
 
 
@@ -591,7 +591,7 @@ def test_keygen_overrides_default() -> None:
     @memoize(keygen=lambda bar, baz: (bar,))
     def foo(bar: int, baz: int) -> int:
         body(bar, baz)
-        
+
         return bar + baz
 
     assert foo(2, 2) == 4
@@ -602,12 +602,12 @@ def test_keygen_overrides_default() -> None:
 
 @pytest.mark.asyncio
 async def test_keygen_awaits_awaitable_parts() -> None:
-    
+
     key_part_body = MagicMock()
 
     async def key_part(bar: int, baz: int) -> Tuple[Hashable, ...]:
         key_part_body(bar, baz)
-        
+
         return bar,
 
     body = MagicMock()
@@ -622,7 +622,7 @@ async def test_keygen_awaits_awaitable_parts() -> None:
     # noinspection PyArgumentEqualDefault
     assert await foo(2, 200) == 4
     body.assert_called_once_with(2, 2)
-    
+
     assert key_part_body.call_count == 2
     key_part_body.assert_has_calls(
         [call(2, 2), call(2, 200)]
@@ -630,7 +630,7 @@ async def test_keygen_awaits_awaitable_parts() -> None:
 
 
 def test_db_creates_table_for_each_decorator(db: Union[bool, Connection, Path, str]) -> None:
-    
+
     assert get_table_len(db) == 0
 
     @memoize(db=db)
@@ -648,7 +648,7 @@ def test_db_creates_table_for_each_decorator(db: Union[bool, Connection, Path, s
 
 def test_db_reloads_values_from_disk(db: Union[bool, Connection, Path, str]) -> None:
     body = MagicMock()
-    
+
     def foo() -> None:
 
         @memoize(db=db)
@@ -659,7 +659,7 @@ def test_db_reloads_values_from_disk(db: Union[bool, Connection, Path, str]) -> 
 
     foo()
     foo()
-    
+
     assert body.call_count == 1
 
 
@@ -712,7 +712,7 @@ def test_db_memoizes_multiple_values(db: Union[bool, Connection, Path, str]) -> 
     for i in range(10):
         foo(i)
     assert len(foo.memoize) == 10
-    
+
     foo = get_foo()
     assert len(foo.memoize) == 10
 
@@ -732,8 +732,8 @@ def test_db_with_size_expires_lru(db: Union[bool, Connection, Path, str]) -> Non
     assert body.call_count == 10
     foo(reversed(range(10)))
     assert body.call_count == 15
-    
-    
+
+
 def test_db_with_duration_expires_stale_values(
         db: Union[bool, Connection, Path, str],
         time: MagicMock,
@@ -927,3 +927,90 @@ def test_keygen_works_with_default_kwargs() -> None:
         ...
 
     foo()
+
+
+def test_object_hash_produces_bad_hashes() -> None:
+    class NaiveClass:
+        """This is a naive class that uses the default hash implementation from object.
+
+        This hash implementation relies on the object's id(), but the id()
+        isn't guaranteed to be unique within the lifetime of the process.
+        So when we memoize a method on the object using the object's hash as
+        a key, there is a possibility that a different newly created object
+        will have the same id (and the same hash), which will create an
+        incorrect cache hit (and incorrect results)
+        """
+
+        def __init__(self, value: int):
+            self._value = value
+
+        @memoize
+        def get_value(self) -> int:
+            return self._value
+
+    count = 100
+    used_hashes = {}
+    for i in range(count):
+        instance = NaiveClass(i)
+        if instance.get_value() != i:
+            print("Instance {} uses same hash as instance {}".format(i, used_hashes[hash(instance)]))
+            break
+        used_hashes[hash(instance)] = i
+    else:
+        pytest.fail(f"{count} instances unexpectedly all had a unique object id/hash")
+
+
+def test_warn_for_method_on_non_uniquely_hashable_class() -> None:
+    class HashWithDefaultImplementation:
+        @memoize
+        def do_calculation(self) -> int:
+            return 42
+
+        @memoize
+        def frobnicate(self) -> str:
+            return "Hello world"
+
+    with pytest.warns(UserWarning, match=r"hash.*duplicate") as warning_record:
+        first = HashWithDefaultImplementation()
+        first.do_calculation()
+        first.do_calculation()
+
+        second = HashWithDefaultImplementation()
+        second.do_calculation()
+    assert len(warning_record) == 1, "Only 1 warning should be issued per decorated function"
+
+    with pytest.warns(UserWarning, match=r"hash.*duplicate"):
+        first.frobnicate()
+
+
+def test_warn_for_function_with_non_uniquely_hashable_key() -> None:
+    class HashWithDefaultImplementation:
+        pass
+
+    @memoize
+    def foo(value) -> None:
+        pass
+
+    with pytest.warns(UserWarning, match=r"hash.*duplicate") as warning_record:
+        foo(HashWithDefaultImplementation())
+        foo(HashWithDefaultImplementation())
+    assert len(warning_record) == 1, "Only 1 warning should be issued per decorated function"
+
+
+def test_dont_warn_for_method_on_custom_hashable_class(recwarn) -> None:
+    class HashWithDefaultImplementation:
+        @memoize
+        def do_calculation(self) -> int:
+            return 42
+
+    class SubclassWithGoodHash(HashWithDefaultImplementation):
+        def __init__(self, value: int):
+            self._value = value
+
+        def __hash__(self):
+            return hash(self._value)
+
+    first = SubclassWithGoodHash(3)
+    first.do_calculation()
+
+    assert len(recwarn) == 0
