@@ -137,6 +137,20 @@ Python 3.6+ decorators including
             @memoize(get_key=lambda a, b, c: (morph_a(a), b, c))
             def foo(a, b, c) -> Any: ...
 
+        - Be careful with memoize values that don't hash consistently within the same process
+          because object ID's get recycled 
+
+            class Foo:
+                @memoize
+                def bar(self) -> Any: ...
+            
+            Foo().bar()  # Function actually called. Result cached. Foo instance deleted.
+            
+            Foo().bar()  # Python uses same object id. Function not called. Previously-cached result returned.
+            
+            # The solution is to implement a custom `__hash__` function for your class,
+            # or a custom `get_key` function for your cache
+
         - Values can persist to disk and be reloaded when memoize is initialized again.
 
             @memoize(db=True)
