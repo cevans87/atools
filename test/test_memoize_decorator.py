@@ -927,3 +927,137 @@ def test_keygen_works_with_default_kwargs() -> None:
         ...
 
     foo()
+
+
+def test_sync_memo_lifetime_is_lte_arg_with_default_object_hash() -> None:
+    # Inherits object.__hash__
+    class Bar:
+        ...
+
+    @memoize
+    def foo(_bar: Bar) -> None:
+        pass
+
+    bar = Bar()
+    foo(bar)
+    assert len(foo.memoize) == 1
+
+    del bar
+    assert len(foo.memoize) == 0
+
+
+@pytest.mark.asyncio
+async def test_async_memo_lifetime_is_lte_arg_with_default_object_hash() -> None:
+    # Inherits object.__hash__
+    class Bar:
+        ...
+
+    @memoize
+    async def foo(_bar: Bar) -> None:
+        pass
+
+    bar = Bar()
+    await foo(bar)
+    assert len(foo.memoize) == 1
+
+    del bar
+    assert len(foo.memoize) == 0
+
+
+def test_sync_memo_lifetime_is_lte_keygen_part_with_default_default_hash() -> None:
+    # Inherits object.__hash__
+    class Bar:
+        ...
+
+    @memoize(keygen=lambda _bar: _bar)
+    def foo(_bar: Bar) -> None:
+        pass
+
+    bar = Bar()
+    foo(bar)
+    assert len(foo.memoize) == 1
+    del bar
+    assert len(foo.memoize) == 0
+
+
+@pytest.mark.asyncio
+async def test_async_memo_lifetime_is_lte_keygen_part_with_default_default_hash() -> None:
+    # Inherits object.__hash__
+    class Bar:
+        ...
+
+    @memoize(keygen=lambda _bar: _bar)
+    async def foo(_bar: Bar) -> None:
+        pass
+
+    bar = Bar()
+    await foo(bar)
+    assert len(foo.memoize) == 1
+    del bar
+    assert len(foo.memoize) == 0
+
+
+def test_sync_memo_lifetime_not_affected_by_arg_with_non_default_hash() -> None:
+    class Bar:
+        def __hash__(self) -> int:
+            return hash('Bar')
+
+    @memoize
+    def foo(_bar: Bar) -> None:
+        pass
+
+    bar = Bar()
+    foo(bar)
+    assert len(foo.memoize) == 1
+    del bar
+    assert len(foo.memoize) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_memo_lifetime_not_affected_by_arg_with_non_default_hash() -> None:
+    class Bar:
+        def __hash__(self) -> int:
+            return hash('Bar')
+
+    @memoize
+    async def foo(_bar: Bar) -> None:
+        pass
+
+    bar = Bar()
+    await foo(bar)
+    assert len(foo.memoize) == 1
+    del bar
+    assert len(foo.memoize) == 1
+
+
+def test_sync_memo_lifetime_lte_keygen_part_with_non_default_hash() -> None:
+    # Inherits object.__hash__
+    class Bar:
+        ...
+
+    @memoize(keygen=lambda _bar: '_bar')
+    def foo(_bar: Bar) -> None:
+        pass
+
+    bar = Bar()
+    foo(bar)
+    assert len(foo.memoize) == 1
+    del bar
+    assert len(foo.memoize) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_memo_lifetime_lte_keygen_part_with_non_default_hash() -> None:
+    # Inherits object.__hash__
+    class Bar:
+        ...
+
+    @memoize(keygen=lambda _bar: '_bar')
+    async def foo(_bar: Bar) -> None:
+        pass
+
+    bar = Bar()
+    await foo(bar)
+    assert len(foo.memoize) == 1
+    del bar
+    assert len(foo.memoize) == 1
