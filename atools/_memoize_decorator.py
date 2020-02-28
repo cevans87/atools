@@ -11,7 +11,7 @@ from textwrap import dedent
 from time import time
 from threading import Lock as SyncLock
 from typing import Any, Callable, Dict, Hashable, Mapping, Optional, Tuple, Type, Union
-from weakref import WeakSet
+from weakref import finalize, WeakSet
 
 
 Decoratee = Union[Callable, Type]
@@ -121,6 +121,11 @@ class _MemoizeBase:
             f':{self.fn.__code__.co_firstlineno}'
         )
 
+    def bind_key_lifetime(self, raw_key: Tuple[Any, ...], key: Union[int, str]) -> None:
+        for raw_key_part in raw_key:
+            if type(raw_key_part).__hash__ is object.__hash__:
+                finalize(raw_key_part, self.reset_key, key)
+
     def default_keygen(self, *args, **kwargs) -> Tuple[Hashable, ...]:
         """Returns all params (args, kwargs, and missing default kwargs) for function as kwargs."""
 
@@ -190,11 +195,11 @@ class _MemoizeBase:
                 )
             return memo.memo_return_state.value
 
-    def get_hashed_key(self, key: Tuple[Hashable]) -> Union[int, str]:
+    def get_key(self, raw_key: Tuple[Hashable, ...]) -> Union[int, str]:
         if self.db is None:
-            key = hash(key)
+            key = hash(raw_key)
         else:
-            key = sha256(str(key).encode()).hexdigest()
+            key = sha256(str(raw_key).encode()).hexdigest()
 
         return key
 
@@ -220,28 +225,27 @@ class _MemoizeBase:
 @dataclass(frozen=True)
 class _AsyncMemoize(_MemoizeBase):
 
-    async def get_key(self, *args, **kwargs) -> Union[int, str]:
+    async def get_raw_key(self, *args, **kwargs) -> Tuple[Hashable, ...]:
         if self.keygen is None:
-            key = self.default_keygen(*args, **kwargs)
+            raw_key = self.default_keygen(*args, **kwargs)
         else:
-            key = self.keygen(**self.get_args_as_kwargs(*args, **kwargs))
-            if isinstance(key, tuple):
-                key = list(key)
+            raw_key = self.keygen(**self.get_args_as_kwargs(*args, **kwargs))
+            if isinstance(raw_key, tuple):
+                raw_key = list(raw_key)
             else:
-                key = [key]
+                raw_key = [raw_key]
 
-            for i, v in enumerate(key):
+            for i, v in enumerate(raw_key):
                 if inspect.isawaitable(v):
-                    key[i] = await v
-            key = tuple(key)
+                    raw_key[i] = await v
+            raw_key = tuple(raw_key)
 
-        key = self.get_hashed_key(key)
-
-        return key
+        return raw_key
 
     def get_decorator(self) -> Callable:
         async def decorator(*args, **kwargs) -> Any:
-            key = await self.get_key(*args, **kwargs)
+            raw_key = await self.get_raw_key(*args, **kwargs)
+            key = self.get_key(raw_key)
 
             memo: _AsyncMemo = self.get_memo(key)
 
@@ -256,6 +260,8 @@ class _AsyncMemoize(_MemoizeBase):
                         memo.memo_return_state.raised = True
                         memo.memo_return_state.value = e
 
+                    self.bind_key_lifetime(raw_key, key)
+
                 return self.finalize_memo(memo=memo, key=key)
 
         decorator.memoize = self
@@ -267,7 +273,8 @@ class _AsyncMemoize(_MemoizeBase):
         return _AsyncMemo(fn=fn, t0=t0)
 
     async def reset_call(self, *args, **kwargs) -> None:
-        key = await self.get_key(*args, **kwargs)
+        raw_key = await self.get_raw_key(*args, **kwargs)
+        key = self.get_key(raw_key)
         self.reset_key(key)
 
 
@@ -276,19 +283,21 @@ class _SyncMemoize(_MemoizeBase):
 
     _sync_lock: SyncLock = field(init=False, default_factory=lambda: SyncLock())
     
-    def get_key(self, *args, **kwargs) -> Union[int, str]:
+    def get_raw_key(self, *args, **kwargs) -> Tuple[Hashable, ...]:
         if self.keygen is None:
-            key = self.default_keygen(*args, **kwargs)
+            raw_key = self.default_keygen(*args, **kwargs)
         else:
-            key = self.keygen(**self.get_args_as_kwargs(*args, **kwargs))
+            raw_key = self.keygen(**self.get_args_as_kwargs(*args, **kwargs))
+            if not isinstance(raw_key, tuple):
+                raw_key = [raw_key]
+            raw_key = tuple(raw_key)
 
-        key = self.get_hashed_key(key)
-
-        return key
+        return raw_key
 
     def get_decorator(self) -> Callable:
         def decorator(*args, **kwargs):
-            key = self.get_key(*args, **kwargs)
+            raw_key = self.get_raw_key(*args, **kwargs)
+            key = self.get_key(raw_key)
 
             with self._sync_lock:
                 memo: _SyncMemo = self.get_memo(key)
@@ -303,6 +312,8 @@ class _SyncMemoize(_MemoizeBase):
                     except Exception as e:
                         memo.memo_return_state.raised = True
                         memo.memo_return_state.value = e
+
+                    self.bind_key_lifetime(raw_key, key)
 
                 return self.finalize_memo(memo=memo, key=key)
 
@@ -319,9 +330,13 @@ class _SyncMemoize(_MemoizeBase):
             super().reset()
 
     def reset_call(self, *args, **kwargs) -> None:
-        key = self.get_key(*args, **kwargs)
+        raw_key = self.get_raw_key(*args, **kwargs)
+        key = self.get_key(raw_key)
+        self.reset_key(key)
+
+    def reset_key(self, key: Union[int, str]) -> None:
         with self._sync_lock:
-            self.reset_key(key)
+            super().reset_key(key)
 
 
 class _Memoize:
@@ -335,6 +350,77 @@ class _Memoize:
 
     If 'size' is provided, memoize will only retain up to 'size' return values.
 
+    A warning about arguments inheriting `object.__hash__`:
+
+        It doesn't make sense to keep a memo if it's impossible to generate the same input again.
+        Inputs that inherit the default `object.__hash__` are unique based on their id, and thus,
+        their location in memory. If such inputs are garbage-collected, they are assumed to be gone
+        forever. For that reason, when those inputs are garbage collected, `memoize` will drop memos
+        created using those inputs.
+
+        Here are some common patterns where this behaviour will not cause any problems.
+
+            - Basic immutable types that have specific, consistent hash functions (int, str, etc.).
+                @memoize
+                def foo(a: int, b: str, c: Tuple[int, ...], d: range) -> Any: ...
+
+                foo(1, 'bar', (1, 2, 3), range(42))  # Function called. Result cached.
+                foo(1, 'bar', (1, 2, 3), range(42))  # Function not called. Cached result returned.
+
+            - Classmethods rely on classes, which inherit from `object.__hash__`. However, classes
+                are almost never garbage collected until a process exits so memoize will work as
+                expected.
+
+                class Foo:
+
+                    @classmethod
+                    @memoize
+                    def bar(cls) -> Any: ...
+
+                foo = Foo()
+                foo.bar()  # Function called. Result cached.
+                foo.bar()  # Function not called. Cached result returned.
+
+                del foo  # Memo not cleared since lifetime is bound to class Foo.
+
+                foo = Foo()
+                foo.bar()  # Function not called. Cached result returned.
+                foo.bar()  # Function not called. Cached result returned.
+
+            - Long-lasting object instances that inherit from `object.__hash__`.
+
+                class Foo:
+
+                    @memoize
+                    def bar(self) -> Any: ...
+
+                foo = Foo()
+                foo.bar()  # Function called. Result cached.
+                foo.bar()  # Function not called. Cached result returned.
+
+                del foo  # Memo is cleared since lifetime is bound to instance foo.
+
+                foo = Foo()
+                foo.bar()  # Function called. Result cached.
+                foo.bar()  # Function not called. Cached result returned.
+
+        Here are common patterns that will not behave as desired (for good reason).
+
+            - Using ephemeral objects that inherit from `object.__hash__`. Firstly, these inputs
+                will only hash equally sometimes, by accident, if their id is recycled from a
+                previously deleted input. Secondly, we delete memos based on inputs that inherit
+                from `object.__hash__` at the same time as that input is garbage collected, so
+                generating the memo is wasted effort.
+
+                # Inherits object.__hash__
+                class Foo: ...
+
+                @memoize
+                def bar(foo: Foo) -> Any: ...
+
+                bar(Foo())  # Memo is immediately deleted since Foo() is garbage collected.
+                bar(Foo())  # Same as previous line. Memo is immediately deleted.
+
     Examples:
 
         - Body will run once for unique input 'bar' and result is cached.
@@ -342,7 +428,7 @@ class _Memoize:
             def foo(bar) -> Any: ...
 
             foo(1)  # Function actually called. Result cached.
-            foo(1)  # Function not called. Previously-cached result returned.
+            foo(1)  # Function not called. Cached result returned.
             foo(2)  # Function actually called. Result cached.
 
         - Same as above, but async.
@@ -359,7 +445,7 @@ class _Memoize:
                 def init(self, _): ...
 
             Foo(1)  # Instance is actually created.
-            Foo(1)  # Instance not created. Previously-cached instance returned.
+            Foo(1)  # Instance not created. Cached instance returned.
             Foo(2)  # Instance is actually created.
 
         - Calls to foo(1), foo(bar=1), and foo(1, baz='baz') are equivalent and only cached once
@@ -380,16 +466,16 @@ class _Memoize:
             def foo(bar) -> Any: ...
 
             foo(1)  # Function actually called. Result cached.
-            foo(1)  # Function not called. Previously-cached result returned.
+            foo(1)  # Function not called. Cached result returned.
             sleep(61)
-            foo(1)  # Function actually called. Previously-cached result was too old.
+            foo(1)  # Function actually called. Cached result was too old.
 
         - Memoize can be explicitly reset through the function's 'memoize' attribute
             @memoize
             def foo(bar) -> Any: ...
 
             foo(1)  # Function actually called. Result cached.
-            foo(1)  # Function not called. Previously-cached result returned.
+            foo(1)  # Function not called. Cached result returned.
             foo.memoize.reset()
             foo(1)  # Function actually called. Cache was emptied.
 
@@ -419,11 +505,11 @@ class _Memoize:
 
             a = Foo()
             a.bar  # Function actually called. Result cached.
-            a.bar  # Function not called. Previously-cached result returned.
+            a.bar  # Function not called. Cached result returned.
 
             b = Foo() # Memoize uses 'self' parameter in hash. 'b' does not share returns with 'a'
             b.bar  # Function actually called. Result cached.
-            b.bar  # Function not called. Previously-cached result returned.
+            b.bar  # Function not called. Cached result returned.
 
         - Be careful with eviction on methods.
             Class Foo:
@@ -447,7 +533,7 @@ class _Memoize:
 
             # Hash key will again be (a, b, c)
             # Be aware, in this example the returned result comes from a.bar(...), not b.bar(...).
-            b.bar(1, 2, 3)  # Function not called. Previously-cached result returned.
+            b.bar(1, 2, 3)  # Function not called. Cached result returned.
 
         - If the memoized function is async and any part of the key is awaitable, it is awaited.
             async def morph_a(a: int) -> int: ...
@@ -464,7 +550,7 @@ class _Memoize:
 
             # Process is restarted. Upon restart, the state of the memoize decorator is reloaded.
 
-            foo(1)  # Function not called. Previously-cached result returned.
+            foo(1)  # Function not called. Cached result returned.
 
         - Be careful with 'db' and memoize values that don't hash consistently upon process restart.
 
@@ -474,7 +560,7 @@ class _Memoize:
                 def bar(cls, a) -> Any: ...
 
             Foo.bar(1)  # Function actually called. Result cached.
-            Foo.bar(1)  # Function not called. Previously-cached result returned.
+            Foo.bar(1)  # Function not called. Cached result returned.
 
             # Process is restarted. Upon restart, the state of the memoize decorator is reloaded.
 
