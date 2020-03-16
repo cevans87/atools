@@ -883,18 +883,6 @@ async def test_async_keygen_can_return_non_tuple() -> None:
     assert body.call_count == 1
 
 
-def test_db_can_return_type_of_return_hint(db: Union[bool, Connection, Path, str]) -> None:
-    class FooPath(PosixPath):
-        pass
-
-    @memoize(db=db)
-    def foo() -> FooPath:
-        return FooPath.cwd()
-
-    assert foo() == FooPath.cwd()
-    assert isinstance(foo(), FooPath)
-
-
 def test_db_can_return_type_of_callers_globals(db: Union[bool, Connection, Path, str]) -> None:
 
     @memoize(db=db)
