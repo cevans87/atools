@@ -6,18 +6,15 @@ import atools._memoize_decorator as test_module
 from datetime import timedelta
 from pathlib import Path, PosixPath
 import pytest
-from sqlite3 import connect, Connection
+from sqlite3 import connect
 from tempfile import NamedTemporaryFile
-from typing import Callable, FrozenSet, Hashable, Iterable, Tuple, Union
-from unittest.mock import call, MagicMock, patch, PropertyMock
+from typing import Callable, FrozenSet, Hashable, Iterable, Tuple
+from unittest.mock import call, MagicMock, patch
 from weakref import ref
 
 
-def get_table_len(db) -> int:
-    if isinstance(db, bool):
-        db = connect(f'{memoize._default_db_path}')
-    elif isinstance(db, (Path, str)):
-        db = connect(f'{db}')
+def get_table_len(db_path: Path) -> int:
+    db = connect(f'{db_path}')
     # noinspection SqlResolve
     return len(db.execute("SELECT name FROM sqlite_master where type='table'").fetchall())
 
@@ -28,17 +25,10 @@ def async_lock() -> MagicMock:
         yield async_lock
 
 
-@pytest.fixture(params=[bool, connect, Path, str])
-def db(request) -> Union[bool, Connection, Path, str]:
+@pytest.fixture
+def db_path() -> Path:
     with NamedTemporaryFile() as f:
-        if request.param is bool:
-            with patch.object(
-                    type(memoize), '_default_db_path', new_callable=PropertyMock
-            ) as default_db_path:
-                default_db_path.return_value = Path(f.name)
-                yield True
-        else:
-            yield request.param(f.name)
+        yield Path(f.name)
 
 
 @pytest.fixture
@@ -629,29 +619,29 @@ async def test_keygen_awaits_awaitable_parts() -> None:
     )
 
 
-def test_db_creates_table_for_each_decorator(db: Union[bool, Connection, Path, str]) -> None:
+def test_db_creates_table_for_each_decorator(db_path: Path) -> None:
     
-    assert get_table_len(db) == 0
+    assert get_table_len(db_path) == 0
 
-    @memoize(db=db)
+    @memoize(db_path=db_path)
     def foo() -> None:
         ...
 
-    assert get_table_len(db) == 1
+    assert get_table_len(db_path) == 1
 
-    @memoize(db=db)
+    @memoize(db_path=db_path)
     def bar() -> None:
         ...
 
-    assert get_table_len(db) == 2
+    assert get_table_len(db_path) == 2
 
 
-def test_db_reloads_values_from_disk(db: Union[bool, Connection, Path, str]) -> None:
+def test_db_reloads_values_from_disk(db_path: Path) -> None:
     body = MagicMock()
     
     def foo() -> None:
 
-        @memoize(db=db)
+        @memoize(db_path=db_path)
         def foo_inner() -> None:
             body()
 
@@ -663,11 +653,11 @@ def test_db_reloads_values_from_disk(db: Union[bool, Connection, Path, str]) -> 
     assert body.call_count == 1
 
 
-def test_reset_removes_values_on_disk(db: Union[bool, Connection, Path, str]) -> None:
+def test_reset_removes_values_on_disk(db_path: Path) -> None:
     body = MagicMock()
 
     def foo() -> None:
-        @memoize(db=db)
+        @memoize(db_path=db_path)
         def foo_inner() -> None:
             body()
 
@@ -680,11 +670,11 @@ def test_reset_removes_values_on_disk(db: Union[bool, Connection, Path, str]) ->
     assert body.call_count == 2
 
 
-def test_db_expires_memo(db: Union[bool, Connection, Path, str], time: MagicMock) -> None:
+def test_db_expires_memo(db_path: Path, time: MagicMock) -> None:
     body = MagicMock()
 
     def foo() -> None:
-        @memoize(db=db, duration=timedelta(days=1))
+        @memoize(db_path=db_path, duration=timedelta(days=1))
         def foo_inner() -> None:
             body()
 
@@ -698,11 +688,11 @@ def test_db_expires_memo(db: Union[bool, Connection, Path, str], time: MagicMock
     assert body.call_count == 2
 
 
-def test_db_memoizes_multiple_values(db: Union[bool, Connection, Path, str]) -> None:
+def test_db_memoizes_multiple_values(db_path: Path) -> None:
     body = MagicMock()
 
     def get_foo() -> Callable[[int], None]:
-        @memoize(db=db)
+        @memoize(db_path=db_path)
         def _foo(_i: int) -> None:
             body(_i)
 
@@ -717,11 +707,11 @@ def test_db_memoizes_multiple_values(db: Union[bool, Connection, Path, str]) -> 
     assert len(foo.memoize) == 10
 
 
-def test_db_with_size_expires_lru(db: Union[bool, Connection, Path, str]) -> None:
+def test_db_with_size_expires_lru(db_path: Path) -> None:
     body = MagicMock()
 
     def foo(it: Iterable[int]) -> None:
-        @memoize(db=db, size=5)
+        @memoize(db_path=db_path, size=5)
         def foo_inner(_i: int) -> None:
             body(_i)
 
@@ -735,13 +725,13 @@ def test_db_with_size_expires_lru(db: Union[bool, Connection, Path, str]) -> Non
     
     
 def test_db_with_duration_expires_stale_values(
-        db: Union[bool, Connection, Path, str],
+        db_path: Path,
         time: MagicMock,
 ) -> None:
     body = MagicMock()
 
     def foo(it: Iterable[int]) -> None:
-        @memoize(db=db, duration=timedelta(hours=1))
+        @memoize(db_path=db_path, duration=timedelta(hours=1))
         def foo_inner(_i: int) -> None:
             body(_i)
 
@@ -761,11 +751,11 @@ def test_db_with_duration_expires_stale_values(
     assert body.call_count == 20
 
 
-def test_db_memoizes_frozenset(db: Union[bool, Connection, Path, str]) -> None:
+def test_db_memoizes_frozenset(db_path: Path) -> None:
     body = MagicMock()
 
     def foo() -> FrozenSet[int]:
-        @memoize(db=db)
+        @memoize(db_path=db_path)
         def foo_inner() -> FrozenSet[int]:
             body()
             return frozenset({1, 2, 3})
@@ -832,11 +822,11 @@ async def test_async_reset_call_resets_call() -> None:
     assert body.call_count == 11
 
 
-def test_reset_call_with_db_resets_call(db: Union[bool, Connection, Path, str]) -> None:
+def test_reset_call_with_db_resets_call(db_path: Path) -> None:
     body = MagicMock()
 
     def get_foo() -> Callable[[int], None]:
-        @memoize(db=db)
+        @memoize(db_path=db_path)
         def foo(_i: int) -> None:
             body(_i)
 
@@ -852,19 +842,6 @@ def test_reset_call_with_db_resets_call(db: Union[bool, Connection, Path, str]) 
     for i in range(10):
         foo(i)
     assert body.call_count == 11
-
-
-def test_set_default_db_path_uses_given_path() -> None:
-    with NamedTemporaryFile() as f, patch.object(type(memoize), '_default_db_path'):
-        memoize.set_default_db_path(f.name)
-
-        assert get_table_len(f.name) == 0
-
-        @memoize(db=True)
-        def foo() -> None:
-            ...
-
-        assert get_table_len(f.name) == 1
 
 
 @pytest.mark.asyncio
@@ -883,9 +860,9 @@ async def test_async_keygen_can_return_non_tuple() -> None:
     assert body.call_count == 1
 
 
-def test_db_can_return_type_of_callers_globals(db: Union[bool, Connection, Path, str]) -> None:
+def test_db_can_return_type_of_callers_globals(db_path: Path) -> None:
 
-    @memoize(db=db)
+    @memoize(db_path=db_path)
     def foo():
         return PosixPath.cwd()
 

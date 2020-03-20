@@ -210,7 +210,7 @@ Python 3.6+ decorators including
 
         - Values can persist to disk and be reloaded when memoize is initialized again.
 
-            @memoize(db=True)
+            @memoize(db_path=Path.home() / '.memoize')
             def foo(a) -> Any: ...
 
             foo(1)  # Function actually called. Result cached.
@@ -218,34 +218,6 @@ Python 3.6+ decorators including
             # Process is restarted. Upon restart, the state of the memoize decorator is reloaded.
 
             foo(1)  # Function not called. Cached result returned.
-
-        - Be careful with 'db' and memoize values that don't hash consistently upon process restart.
-
-            class Foo:
-                @classmethod
-                @memoize(db=True)
-                def bar(cls, a) -> Any: ...
-
-            Foo.bar(1)  # Function actually called. Result cached.
-            Foo.bar(1)  # Function not called. Cached result returned.
-
-            # Process is restarted. Upon restart, the state of the memoize decorator is reloaded.
-
-            # Hash value of 'cls', is now different.
-            Foo.bar(1)  # Function actually called. Result cached.
-
-            # You can create a consistent hash key to avoid this.
-            class Foo:
-                @classmethod
-                @memoize(db=True, keygen=lambda cls, a: (f'{cls.__package__}:{cls.__name__}', a))
-                def bar(cls, a) -> Any: ...
-
-        - Alternative location of 'db' can also be given as pathlib.Path or str.
-            @memoize(db=Path.home() / 'foo_memoize')
-            def foo() -> Any: ...
-
-            @memoize(db='~/bar_memoize')
-            def bar() -> Any: ...
 
 ## rate
     Function decorator that rate limits the number of calls to function.
