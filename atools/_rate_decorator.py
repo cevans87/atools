@@ -102,28 +102,44 @@ def rate(
 ):
     """Function decorator that rate limits the number of calls to function.
 
-    'size' must be provided. It specifies the maximum number of calls that may be made concurrently
-      and optionally within a given 'duration' time window.
+    - `size` must be provided. It specifies the maximum number of calls that may be made
+      concurrently and optionally within a given `duration` time window.
+    - If `duration` is provided it limits the maximum call count to `size` in any given `duration`
+      time window.
 
-    If 'duration' is provided, the maximum number of calls is limited to 'size' calls in any given
-      'duration' time window.
+    ### Examples
 
-    Examples:
-        - Only 2 concurrent calls allowed.
-            @rate(size=2)
-            def foo(): ...
+    - Only 2 concurrent calls allowed.
+        ```python3
+        @rate(size=2)
+        def foo(): ...
+        ```
 
-        - Only 2 calls allowed per minute.
-            @rate(size=2, duration=60)
-            def foo(): ...
+    - Only 2 calls allowed per minute.
+        ```python3
+        @rate(size=2, duration=60)
+        def foo(): ...
+        ```
 
-        - Same as above, but duration specified with a timedelta.
-            @rate_window(size=2, duration=datetime.timedelta(minutes=1))
-            def foo(): ...
+    - Same as above, but duration specified with a timedelta.
+        ```python3
+        @rate(size=2, duration=datetime.timedelta(minutes=1))
+        def foo(): ...
+        ```
 
-        - Same as above, but async.
-            @rate_window(size=2, duration=datetime.timedelta(minutes=1))
-            async def foo(): ...
+    - Same as above, but async.
+        ```python3
+        @rate(size=2, duration=datetime.timedelta(minutes=1))
+        async def foo(): ...
+        ```
+
+    - More advanced rate limiting is possible by composing multiple rate decorators.
+        ```python3
+        # Up to 100 calls per minute, but only 10 concurrent.
+        @rate(size=100, duration=60)
+        @rate(size=10)
+        def foo(): ...
+        ```
     """
     if _fn is None:
         return partial(rate, size=size, duration=duration)
