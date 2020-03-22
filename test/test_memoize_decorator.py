@@ -55,6 +55,18 @@ def test_zero_args() -> None:
     assert body.call_count == 1
 
 
+def test_none_arg() -> None:
+    body = MagicMock()
+
+    @memoize
+    def foo(_bar) -> None:
+        body()
+
+    foo(None)
+    foo(None)
+    assert body.call_count == 1
+
+
 def test_class_function() -> None:
     body = MagicMock()
 
