@@ -55,6 +55,18 @@ def test_zero_args() -> None:
     assert body.call_count == 1
 
 
+def test_none_arg() -> None:
+    body = MagicMock()
+
+    @memoize
+    def foo(_bar) -> None:
+        body()
+
+    foo(None)
+    foo(None)
+    assert body.call_count == 1
+
+
 def test_class_function() -> None:
     body = MagicMock()
 
@@ -73,7 +85,7 @@ def test_class_function() -> None:
     f.foo()
     f.foo()
     body.assert_called_once()
-    
+
 
 def test_keyword_same_as_default() -> None:
     body = MagicMock()
@@ -571,7 +583,7 @@ def test_memoize_class_preserves_doc() -> None:
     @memoize
     class Foo:
         """Foo doc"""
-        
+
     assert Foo.__doc__ == "Foo doc"
 
 
@@ -581,7 +593,7 @@ def test_keygen_overrides_default() -> None:
     @memoize(keygen=lambda bar, baz: (bar,))
     def foo(bar: int, baz: int) -> int:
         body(bar, baz)
-        
+
         return bar + baz
 
     assert foo(2, 2) == 4
@@ -592,12 +604,12 @@ def test_keygen_overrides_default() -> None:
 
 @pytest.mark.asyncio
 async def test_keygen_awaits_awaitable_parts() -> None:
-    
+
     key_part_body = MagicMock()
 
     async def key_part(bar: int, baz: int) -> Tuple[Hashable, ...]:
         key_part_body(bar, baz)
-        
+
         return bar,
 
     body = MagicMock()
@@ -612,7 +624,7 @@ async def test_keygen_awaits_awaitable_parts() -> None:
     # noinspection PyArgumentEqualDefault
     assert await foo(2, 200) == 4
     body.assert_called_once_with(2, 2)
-    
+
     assert key_part_body.call_count == 2
     key_part_body.assert_has_calls(
         [call(2, 2), call(2, 200)]
@@ -620,7 +632,7 @@ async def test_keygen_awaits_awaitable_parts() -> None:
 
 
 def test_db_creates_table_for_each_decorator(db_path: Path) -> None:
-    
+
     assert get_table_len(db_path) == 0
 
     @memoize(db_path=db_path)
@@ -638,7 +650,7 @@ def test_db_creates_table_for_each_decorator(db_path: Path) -> None:
 
 def test_db_reloads_values_from_disk(db_path: Path) -> None:
     body = MagicMock()
-    
+
     def foo() -> None:
 
         @memoize(db_path=db_path)
@@ -649,7 +661,7 @@ def test_db_reloads_values_from_disk(db_path: Path) -> None:
 
     foo()
     foo()
-    
+
     assert body.call_count == 1
 
 
@@ -702,7 +714,7 @@ def test_db_memoizes_multiple_values(db_path: Path) -> None:
     for i in range(10):
         foo(i)
     assert len(foo.memoize) == 10
-    
+
     foo = get_foo()
     assert len(foo.memoize) == 10
 
@@ -722,8 +734,8 @@ def test_db_with_size_expires_lru(db_path: Path) -> None:
     assert body.call_count == 10
     foo(reversed(range(10)))
     assert body.call_count == 15
-    
-    
+
+
 def test_db_with_duration_expires_stale_values(
         db_path: Path,
         time: MagicMock,
