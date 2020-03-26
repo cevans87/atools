@@ -55,18 +55,6 @@ def test_zero_args() -> None:
     assert body.call_count == 1
 
 
-def test_none_arg() -> None:
-    body = MagicMock()
-
-    @memoize
-    def foo(_bar) -> None:
-        body()
-
-    foo(None)
-    foo(None)
-    assert body.call_count == 1
-
-
 def test_class_function() -> None:
     body = MagicMock()
 
@@ -781,7 +769,7 @@ def test_db_memoizes_frozenset(db_path: Path) -> None:
     assert body.call_count == 1
 
 
-def test_sync_reset_call_resets_one() -> None:
+def test_sync_remove_removes_one() -> None:
     body = MagicMock()
 
     @memoize
@@ -792,7 +780,7 @@ def test_sync_reset_call_resets_one() -> None:
         foo(i)
     assert body.call_count == 10
 
-    foo.memoize.reset_call(5)
+    foo.memoize.remove(5)
     for i in range(10):
         foo(i)
     assert body.call_count == 11
@@ -810,14 +798,14 @@ def test_reset_call_before_expire_resets_one(time: MagicMock) -> None:
     foo(0)
     assert body.call_count == 1
 
-    foo.memoize.reset_call(0)
+    foo.memoize.remove(0)
     foo(0)
     foo(0)
     assert body.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_async_reset_call_resets_call() -> None:
+async def test_async_remove_removes_call() -> None:
     body = MagicMock()
 
     @memoize
@@ -828,7 +816,7 @@ async def test_async_reset_call_resets_call() -> None:
         await foo(i)
     assert body.call_count == 10
 
-    await foo.memoize.reset_call(5)
+    await foo.memoize.remove(5)
     for i in range(10):
         await foo(i)
     assert body.call_count == 11
@@ -850,7 +838,7 @@ def test_reset_call_with_db_resets_call(db_path: Path) -> None:
     assert body.call_count == 10
 
     foo = get_foo()
-    foo.memoize.reset_call(5)
+    foo.memoize.remove(5)
     for i in range(10):
         foo(i)
     assert body.call_count == 11
@@ -1038,3 +1026,123 @@ async def test_async_memo_lifetime_lte_keygen_part_with_non_default_hash() -> No
     assert len(foo.memoize) == 1
     del bar
     assert len(foo.memoize) == 1
+
+
+def test_sync_update_does_not_update_nonexistent_value() -> None:
+    body = MagicMock()
+
+    @memoize
+    def foo() -> None:
+        body()
+
+    foo.memoize.update()(1)
+
+    assert body.call_count == 0
+    assert len(foo.memoize) == 0
+    assert foo() is None
+
+
+@pytest.mark.asyncio
+async def test_async_update_does_not_update_nonexistent_value() -> None:
+    body = MagicMock()
+
+    @memoize
+    async def foo() -> None:
+        body()
+
+    await foo.memoize.update()(1)
+
+    assert body.call_count == 0
+    assert len(foo.memoize) == 0
+    assert await foo() is None
+
+
+def test_sync_update_updates_existing_value() -> None:
+    body = MagicMock()
+
+    @memoize
+    def foo() -> None:
+        body()
+
+    foo()
+    foo.memoize.update()(1)
+
+    assert body.call_count == 1
+    assert len(foo.memoize) == 1
+    assert foo() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_update_updates_existing_value() -> None:
+    body = MagicMock()
+
+    @memoize
+    async def foo() -> None:
+        body()
+
+    await foo()
+    await foo.memoize.update()(1)
+
+    assert body.call_count == 1
+    assert len(foo.memoize) == 1
+    assert await foo() == 1
+
+
+def test_sync_upsert_upserts_nonexistent_value() -> None:
+    body = MagicMock()
+
+    @memoize
+    def foo() -> None:
+        body()
+
+    foo.memoize.upsert()(1)
+
+    assert body.call_count == 0
+    assert len(foo.memoize) == 1
+    assert foo() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_upsert_upserts_nonexistent_value() -> None:
+    body = MagicMock()
+
+    @memoize
+    async def foo() -> None:
+        body()
+
+    await foo.memoize.upsert()(1)
+
+    assert body.call_count == 0
+    assert len(foo.memoize) == 1
+    assert await foo() == 1
+
+
+def test_sync_upsert_upserts_existing_value() -> None:
+    body = MagicMock()
+
+    @memoize
+    def foo() -> None:
+        body()
+
+    foo()
+    foo.memoize.upsert()(1)
+
+    assert body.call_count == 1
+    assert len(foo.memoize) == 1
+    assert foo() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_upsert_upserts_existing_value() -> None:
+    body = MagicMock()
+
+    @memoize
+    async def foo() -> None:
+        body()
+
+    await foo()
+    await foo.memoize.upsert()(1)
+
+    assert body.call_count == 1
+    assert len(foo.memoize) == 1
+    assert await foo() == 1
