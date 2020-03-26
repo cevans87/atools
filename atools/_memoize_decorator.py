@@ -113,7 +113,7 @@ class _MemoizeBase:
 
     def bind_key_lifetime(self, raw_key: Tuple[Any, ...], key: Union[int, str]) -> None:
         for raw_key_part in raw_key:
-            if type(raw_key_part).__hash__ is object.__hash__:
+            if (raw_key_part is not None) and (type(raw_key_part).__hash__ is object.__hash__):
                 finalize(raw_key_part, self.reset_key, key)
 
     def default_keygen(self, *args, **kwargs) -> Tuple[Hashable, ...]:
