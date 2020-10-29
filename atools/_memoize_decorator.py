@@ -43,7 +43,7 @@ class _AsyncMemo(_MemoBase):
 
 @dataclass(frozen=True)
 class _SyncMemo(_MemoBase):
-    sync_lock: AsyncLock = field(init=False, default_factory=lambda: SyncLock())
+    sync_lock: SyncLock = field(init=False, default_factory=lambda: SyncLock())
 
 
 _Memo = Union[_AsyncMemo, _SyncMemo]
