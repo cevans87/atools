@@ -32,6 +32,13 @@ def db_path() -> Path:
 
 
 @pytest.fixture
+def dill() -> test_module.Pickler:
+    import dill
+    yield dill
+    del dill
+
+
+@pytest.fixture
 def sync_lock() -> MagicMock:
     with patch.object(test_module, 'SyncLock', side_effect=None) as sync_lock:
         yield sync_lock
@@ -1158,3 +1165,18 @@ async def test_async_upsert_upserts_existing_value() -> None:
     assert body.call_count == 1
     assert len(foo.memoize) == 1
     assert await foo() == 1
+
+
+def test_function_return_type_with_db_and_dill_does_not_raise(db_path: Path, dill: test_module.Pickler) -> None:
+    foo_body = MagicMock()
+
+    @memoize(db_path=db_path, pickler=dill)
+    def foo() -> Callable[[], None]:
+        foo_body()
+
+        return lambda: None
+
+    foo()()
+    foo()()
+
+    assert foo_body.call_count == 1

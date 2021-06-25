@@ -11,6 +11,7 @@ Decorates a function call and caches return value for given inputs.
 - If `db_path` is provided, memos will persist on disk and reloaded during initialization.
 - If `duration` is provided, memos will only be valid for given `duration`.
 - If `keygen` is provided, memo hash keys will be created with given `keygen`.
+- If `pickler` is provided, persistent memos will (de)serialize using given `pickler`.
 - If `size` is provided, LRU memo will be evicted if current count exceeds given `size`.
 
 ### Examples
@@ -261,6 +262,16 @@ inputs.
 
     # foo instance is kept around somewhere and used later.
     foo.bar()  # Function not called. Cached result returned.
+    ```
+
+- Custom pickler may be specified for persistent memo (de)serialization.
+
+    ```python3
+    import dill
+
+    @memoize(db_path='~/.memoize`, pickler=dill)
+    def foo() -> Callable[[], None]:
+        return lambda: None
     ```
 
 ## rate

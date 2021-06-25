@@ -7,7 +7,7 @@ dist: xenial
 env:
   PYTHONPATH=.
 before_install:
-  - pip install pytest pytest-asyncio pytest-cov
+  - pip install dill pytest pytest-asyncio pytest-cov
   - pip install coveralls
 install:
   - python setup.py -q install
