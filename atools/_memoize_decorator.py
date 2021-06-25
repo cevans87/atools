@@ -1,3 +1,4 @@
+from abc import ABC
 from asyncio import Lock as AsyncLock
 from collections import ChainMap, OrderedDict
 from dataclasses import dataclass, field
@@ -11,12 +12,23 @@ from sqlite3 import connect, Connection
 from textwrap import dedent
 from time import time
 from threading import Lock as SyncLock
-from typing import Any, Callable, Iterable, Hashable, Mapping, Optional, Tuple, Type, Union
+from typing import Any, Callable, Hashable, Mapping, Optional, Tuple, Type, Union
 from weakref import finalize, WeakSet
 
 
 Decoratee = Union[Callable, Type]
 Keygen = Callable[..., Any]
+
+
+class Pickler(ABC):
+
+    @staticmethod
+    def dumps(_str: str) -> str:
+        ...  # pragma: no cover
+
+    @staticmethod
+    def loads(_bytes: bytes) -> Any:
+        ...  # pragma: no cover
 
 
 class _MemoZeroValue:
@@ -56,6 +68,7 @@ class _MemoizeBase:
     duration: Optional[timedelta]
     fn: Callable
     keygen: Optional[Keygen]
+    pickler: Pickler = field(hash=False)
     size: Optional[int]
 
     expire_order: OrderedDict = field(init=False, default_factory=OrderedDict, hash=False)
@@ -91,7 +104,7 @@ class _MemoizeBase:
             ).fetchall():
                 memo = self.make_memo(t0=t0)
                 memo.memo_return_state.called = True
-                memo.memo_return_state.value = pickle.loads(v)
+                memo.memo_return_state.value = self.pickler.loads(v)
                 self.memos[k] = memo
             if self.duration:
                 for k, t0 in self.db.execute(
@@ -168,7 +181,7 @@ class _MemoizeBase:
         if memo.memo_return_state.raised:
             raise memo.memo_return_state.value
         elif (self.db is not None) and (self.memos[key] is memo):
-            value = pickle.dumps(memo.memo_return_state.value)
+            value = self.pickler.dumps(memo.memo_return_state.value)
             self.db.execute(
                 dedent(f'''
                     INSERT OR REPLACE INTO `{self.table_name}`
@@ -413,6 +426,7 @@ class _Memoize:
     - If `db_path` is provided, memos will persist on disk and reloaded during initialization.
     - If `duration` is provided, memos will only be valid for given `duration`.
     - If `keygen` is provided, memo hash keys will be created with given `keygen`.
+    - If `pickler` is provided, persistent memos will (de)serialize using given `pickler`.
     - If `size` is provided, LRU memo will be evicted if current count exceeds given `size`.
 
     ### Examples
@@ -664,6 +678,16 @@ class _Memoize:
         # foo instance is kept around somewhere and used later.
         foo.bar()  # Function not called. Cached result returned.
         ```
+
+    - Custom pickler may be specified for unpickleable return types.
+
+        ```python3
+        import dill
+
+        @memoize(db_path='~/.memoize`, pickler=dill)
+        def foo() -> Callable[[], None]:
+            return lambda: None
+        ```
     """
 
     _all_decorators = WeakSet()
@@ -675,10 +699,11 @@ class _Memoize:
             db_path: Optional[Path] = None,
             duration: Optional[Union[int, float, timedelta]] = None,
             keygen: Optional[Keygen] = None,
+            pickler: Optional[Pickler] = None,
             size: Optional[int] = None,
     ) -> Union[Decoratee]:
         if _decoratee is None:
-            return partial(memoize, db_path=db_path, duration=duration, keygen=keygen, size=size)
+            return partial(memoize, db_path=db_path, duration=duration, keygen=keygen, pickler=pickler, size=size)
 
         if inspect.isclass(_decoratee):
             assert db_path is None, 'Class memoization not allowed with db.'
@@ -697,6 +722,7 @@ class _Memoize:
         db = connect(f'{db_path}') if db_path is not None else None
         duration = timedelta(seconds=duration) if isinstance(duration, (int, float)) else duration
         assert (duration is None) or (duration.total_seconds() > 0)
+        pickler = pickle if pickler is None else pickler
         assert (size is None) or (size > 0)
         fn = _decoratee
         default_kwargs: Mapping[str, Any] = {
@@ -715,6 +741,7 @@ class _Memoize:
             duration=duration,
             fn=fn,
             keygen=keygen,
+            pickler=pickler,
             size=size,
         ).get_decorator()
 
