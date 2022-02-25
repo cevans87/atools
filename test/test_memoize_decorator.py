@@ -162,6 +162,31 @@ async def test_async_size() -> None:
     body.assert_called_once_with(0)
 
 
+def test_sync_size_with_duration() -> None:
+    body = MagicMock()
+
+    @memoize(duration=timedelta(hours=1), size=1)
+    def foo(bar) -> None:
+        body(bar)
+
+    for i in range(3):
+        foo(i)
+    assert body.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_async_size_with_duration() -> None:
+    body = MagicMock()
+
+    @memoize(duration=timedelta(hours=1), size=1)
+    async def foo(bar) -> None:
+        body(bar)
+
+    for i in range(3):
+        await foo(i)
+    assert body.call_count == 3
+
+
 def test_sync_exception() -> None:
     class FooException(Exception):
         ...

@@ -174,6 +174,8 @@ class _MemoizeBase:
             self.memos.pop(k)
         elif self.size is not None and self.size < len(self.memos):
             (k, _) = self.memos.popitem(last=False)
+            if self.expire_order:
+                self.expire_order.pop(k)
         if (self.db is not None) and (k is not None):
             self.db.execute(f"DELETE FROM `{self.table_name}` WHERE k = '{k}'")
 
