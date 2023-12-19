@@ -1,5 +1,5 @@
 import asyncio
-from asyncio import coroutine, Event as AsyncEvent, gather
+from asyncio import Event as AsyncEvent, gather
 from atools import rate
 from concurrent.futures import ThreadPoolExecutor
 import pytest
@@ -97,12 +97,14 @@ def test_duration_causes_sync_waiter_to_sleep(sync_sleep: MagicMock, time: Magic
 async def test_duration_causes_async_waiter_to_sleep(
         async_sleep: MagicMock, time: MagicMock
 ) -> None:
-    async_sleep.side_effect = coroutine(lambda *_: None)
+    async def foo(*_):
+        ...
+    async_sleep.side_effect = foo
 
     @rate(size=1, duration=10)
-    async def foo():
+    async def bar():
         ...
 
-    await gather(foo(), foo())
+    await gather(bar(), bar())
 
     async_sleep.assert_called_once_with(10)
