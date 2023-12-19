@@ -1,5 +1,5 @@
 from asyncio import (
-    coroutine, ensure_future, Event, gather, get_event_loop, new_event_loop, set_event_loop
+    ensure_future, Event, gather, get_event_loop, new_event_loop, set_event_loop
 )
 from atools import memoize
 import atools._memoize_decorator as test_module
@@ -437,9 +437,15 @@ async def test_async_does_not_sync_lock(sync_lock: MagicMock) -> None:
 @pytest.mark.asyncio
 async def test_async_locks_async(async_lock: MagicMock) -> None:
     async_lock_context = async_lock.return_value = MagicMock()
-    type(async_lock_context).__aenter__ = \
-        coroutine(lambda *args, **kwargs: async_lock_context)
-    type(async_lock_context).__aexit__ = coroutine(lambda *args, **kwargs: None)
+
+    async def __aenter__(*args, **kwargs):
+        return async_lock_context
+
+    async def __aexit__(*args, **kwargs):
+        ...
+
+    type(async_lock_context).__aenter__ = __aenter__
+    type(async_lock_context).__aexit__ = __aexit__
 
     @memoize
     async def foo() -> None:
@@ -451,9 +457,15 @@ async def test_async_locks_async(async_lock: MagicMock) -> None:
 
 def test_sync_does_not_async_lock(async_lock: MagicMock) -> None:
     async_lock_context = async_lock.return_value = MagicMock()
-    type(async_lock_context).__aenter__ = \
-        coroutine(lambda *args, **kwargs: async_lock_context)
-    type(async_lock_context).__aexit__ = coroutine(lambda *args, **kwargs: None)
+
+    async def __aenter__(*args, **kwargs):
+        return async_lock_context
+
+    async def __aexit__(*args, **kwargs):
+        ...
+
+    type(async_lock_context).__aenter__ = __aenter__
+    type(async_lock_context).__aexit__ = __aexit__
 
     @memoize
     def foo() -> None:
