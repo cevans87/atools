@@ -1,3 +1,4 @@
+from pathlib import Path
 from setuptools import find_packages, setup
 
 setup(
@@ -10,10 +11,13 @@ setup(
     author='cevans',
     author_email='c.d.evans87@gmail.com',
     description='Python 3.6+ async/sync memoize and rate decorators',
-    tests_require=[
-        'dill',
-        'pytest',
-        'pytest-asyncio',
-        'pytest-cov',
-    ],
+    extras_require={
+        'base': (base := [
+            *filter(None, (Path(__file__).parent / 'pip_requirements.txt').read_text().splitlines())
+        ]),
+        'test': (test := base + [
+            *filter(None, (Path(__file__).parent / 'test' / 'pip_requirements.txt').read_text().splitlines())
+        ]),
+    },
+    install_requires=base,
 )
