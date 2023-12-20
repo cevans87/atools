@@ -1,6 +1,6 @@
 [![Coverage Status](https://coveralls.io/repos/github/cevans87/atools/badge.svg?branch=master&kill_cache=1)](https://coveralls.io/github/cevans87/atools?branch=master)
 # atools
-Python 3.6+ decorators including
+Python 3.9+ decorators including
 
 - `@memoize` - a function decorator for sync and async functions that memoizes results.
 - `@rate` - a function decorator for sync and async functions that rate limits calls.
