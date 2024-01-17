@@ -5,7 +5,7 @@ setup(
     name='atools',
     version='0.14.2',
     packages=find_packages(),
-    python_requires='>=3.9',
+    python_requires='>=3.12',
     url='https://github.com/cevans87/atools',
     license='mit',
     author='cevans',
