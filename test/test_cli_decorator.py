@@ -1,39 +1,74 @@
 import sys
-from asyncio import (
-    ensure_future, Event, gather, get_event_loop, new_event_loop, set_event_loop
-)
-from atools import memoize
-import atools._memoize_decorator as test_module
 from collections.abc import Generator
-from datetime import timedelta
 import importlib
-from pathlib import Path, PosixPath
+import logging
+import pathlib
 import pytest
-from sqlite3 import connect
-from tempfile import NamedTemporaryFile
-from types import ModuleType
-from typing import Callable, FrozenSet, Hashable, Iterable, Tuple
-from unittest.mock import call, MagicMock, patch
-from weakref import ref
-from importlib import import_module
+import shlex
+import types
 
 
-sys.path.insert(0, str(Path(__file__).parent.absolute() / 'test_cli_modules'))
-
-
-@pytest.fixture
-def blank() -> Generator[ModuleType, None, None]:
-    yield import_module('blank')
+def module(name: str) -> Generator[types.ModuleType, None, None]:
+    sys.path.insert(0, str(pathlib.Path(__file__).parent.absolute() / 'test_cli_modules' / name))
+    yield importlib.import_module(name)
+    sys.path.pop(0)
 
 
 @pytest.fixture
-def one_child() -> Generator[ModuleType, None, None]:
-    yield import_module('one_child')
+def blank() -> Generator[types.ModuleType, None, None]:
+    yield from module('blank')
 
 
-def test_module_imports(blank: ModuleType) -> None:
-    assert blank.__file__ == str(Path(__file__).parent.absolute() / 'test_cli_modules' / 'blank' / '__init__.py')
+@pytest.fixture
+def flag_types() -> Generator[types.ModuleType, None, None]:
+    yield from module('flag_types')
 
 
-def test_blank_has_no_children(blank: ModuleType) -> None:
-    parser = cli(blank)
+def test_module_imports(blank: types.ModuleType) -> None:
+    assert blank.__file__ == str(pathlib.Path(__file__).parent.absolute() / 'test_cli_modules' / 'blank' / 'blank.py')
+
+
+def test_blank_has_no_children(blank: types.ModuleType) -> None:
+    assert blank.main.parser._subparsers is None
+
+
+def test_flag_types_has_children(flag_types: types.ModuleType) -> None:
+    assert flag_types.main.parser._subparsers is not None
+
+
+def test_blank_has_no_log_level_flag(blank: types.ModuleType) -> None:
+    assert '--log-level' not in blank.main.parser.format_help()
+
+
+def test_flag_types_has_log_level_flag(flag_types: types.ModuleType) -> None:
+    assert '--log-level' in flag_types.main.parser.format_help()
+
+
+def test_flag_types_parses_log_level(flag_types: types.ModuleType) -> None:
+    args = flag_types.main.parser.parse_args(shlex.split('--log-level INFO'))
+    assert args.log_level == logging.INFO
+
+    args = flag_types.main.parser.parse_args(shlex.split('--log-level DEBUG'))
+    assert args.log_level == logging.DEBUG
+
+
+def test_flag_types_recieve_correct_arguments(flag_types: types.ModuleType) -> None:
+    foo = flag_types.main.run(shlex.split('with_default'))
+    assert flag_types.main.run(shlex.split('with_default')) == {
+        'positional_only': 1,
+        'positional_or_keyword': 2,
+        'keyword_only': 3
+    }
+
+    for i in range(2):
+        assert flag_types.main.run(shlex.split(f'without_default {i} {i + 1} --keyword-only {i + 2}')) == {
+            'positional_only': i,
+            'positional_or_keyword': i + 1,
+            'keyword_only': i + 2,
+        }
+
+    assert flag_types.main.run(shlex.split('variadic 1 2 3 --kw0 foo bar --kw1 baz --kw2 qux quux')) == {
+        'var_positional': []
+    }
+
+
