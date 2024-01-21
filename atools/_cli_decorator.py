@@ -16,37 +16,44 @@ logging.basicConfig(level=logging.ERROR)
 
 
 @dataclasses.dataclass(frozen=True)
-class _Cli[Entrypoint]:
+class Decorations[** Input, Output]:
     _: dataclasses.KW_ONLY
-    entrypoint_name: str = 'main'
+    cli: CLI[Input, Output]
+    parser: argparse.ArgumentParser
+
+    def run(self, args: list[str] = ...) -> object:
+        args = sys.argv[1:] if args is ... else args
+        parsed_args = vars(self.parser.parse_args(args))
+
+        # Note that this may be the entrypoint of a subparser.
+        entrypoint = parsed_args['entrypoint']
+        args, kwargs = [], {}
+        for parameter in inspect.signature(entrypoint).parameters.values():
+            if parameter.kind == parameter.POSITIONAL_ONLY:
+                args.append(parsed_args[parameter.name])
+            else:
+                kwargs[parameter.name] = parsed_args[parameter.name]
+
+        return entrypoint(*args, **kwargs)
+
+
+class Entrypoint[**Input, Output](typing.Protocol):
+    __call__: typing.Callable[Input, Output]
+
+
+class Decorated[**Input, Output](Entrypoint[Input, Output]):
+    decorations: Decorations[Input, Output]
+
+
+@dataclasses.dataclass(frozen=True)
+class CLI[**Input, Output]:
+    _: dataclasses.KW_ONLY
+    entrypoint_name: str | None = 'entrypoint'
     log_level: str = 'ERROR'
-    logger_name: typing.Optional[str] = 'logger'
-
-    @dataclasses.dataclass(frozen=True)
-    class Decorated:
-        _: dataclasses.KW_ONLY
-        cli: _Cli
-        entrypoint: Entrypoint
-        parser: argparse.ArgumentParser
-
-        def _call(self, *args, **kwargs):
-            return self.entrypoint(*args, **kwargs)
-
-        __call__: Entrypoint = _call
-
-        def run(self, args: list[*str] = ...) -> ...:
-            args = sys.argv[1:] if args is ... else args
-            parsed_args = vars(self.parser.parse_args(args))
-
-            entrypoint_args = [parsed_arg]
-            entrypoint_kwargs = {}
-
-            entrypoint = parsed_args['entrypoint']
-            keys = inspect.signature(entrypoint).parameters.keys()
-            return entrypoint(**{key: parsed_args[key] for key in keys})
+    logger_name: str | None = 'logger'
 
     @staticmethod
-    def set_flag(parser, entrypoint, flag) -> None:
+    def set_flag[**Input, Output](parser: argparse.ArgumentParser, entrypoint: Entrypoint[Input, Output], flag) -> None:
         if flag == 'return':
             return
 
@@ -87,8 +94,8 @@ class _Cli[Entrypoint]:
             case _:
                 raise RuntimeError(f'During parser setup for {entrypoint=}: {flag=} has unknown {parameter.kind=}.')
 
-    def set_entrypoint(self, module, parser, entrypoint=None) -> None:
-        if entrypoint is None and (entrypoint := getattr(module, self.entrypoint_name, None)) is None:
+    def set_entrypoint(self, module, parser, entrypoint: Entrypoint = ...) -> None:
+        if entrypoint is ... and (entrypoint := getattr(module, self.entrypoint_name, None)) is None:
             return
 
         parser.set_defaults(entrypoint=entrypoint)
@@ -112,14 +119,13 @@ class _Cli[Entrypoint]:
             choices=logging.getLevelNamesMapping().keys(),
             default='ERROR')
 
-    def __call__(self, entrypoint: Entrypoint, /) -> Decorated:
+    def __call__(self, entrypoint: Entrypoint, /) -> Decorated[Input, Output]:
         module = inspect.getmodule(entrypoint)
 
         parser = argparse.ArgumentParser(module.__doc__)
         parser.set_defaults(entrypoint=lambda: parser.print_help)
 
-        decorated = self.Decorated(cli=self, entrypoint=entrypoint, parser=parser)
-
+        entrypoint.decorations = Decorations(cli=self, parser=parser)
         # Entrypoint can't reliably be found via inspection of modules as modules may only be partially loaded (this
         #  decorator is likely processed while the module is still loading during import-time).
         stack = [(module, parser, entrypoint)]
@@ -138,7 +144,7 @@ class _Cli[Entrypoint]:
                     sub_parser.set_defaults(entrypoint=lambda: sub_parser.print_help)
                     stack.append((sub_module, sub_parser, None))
 
-        return decorated
+        return entrypoint
 
 
-cli = _Cli()
+cli = CLI()
