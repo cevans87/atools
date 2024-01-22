@@ -7,5 +7,6 @@ logger = getLogger(__package__)
 
 
 @cli
-def main(foo: int = 0) -> dict[str, int]:
+def main(foo: int, /) -> dict[str, int]:
+    print(foo)
     return locals()

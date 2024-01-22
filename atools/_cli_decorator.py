@@ -16,9 +16,9 @@ logging.basicConfig(level=logging.ERROR)
 
 
 @dataclasses.dataclass(frozen=True)
-class Decorations[** Input, Output]:
+class _Decoration[** Input, Output]:
     _: dataclasses.KW_ONLY
-    cli: CLI[Input, Output]
+    decorator: _Decorator[Input, Output]
     parser: argparse.ArgumentParser
 
     def run(self, args: list[str] = ...) -> object:
@@ -37,28 +37,32 @@ class Decorations[** Input, Output]:
         return entrypoint(*args, **kwargs)
 
 
-class Entrypoint[**Input, Output](typing.Protocol):
+class _Entrypoint[** Input, Output](typing.Protocol):
     __call__: typing.Callable[Input, Output]
 
 
-class Decorated[**Input, Output](Entrypoint[Input, Output]):
-    decorations: Decorations[Input, Output]
+class _Decorated[** Input, Output](typing.Protocol):
+    __call__: typing.Callable[Input, Output]
+    cli: _Decoration[Input, Output]
 
 
 @dataclasses.dataclass(frozen=True)
-class CLI[**Input, Output]:
+class _Decorator[** Input, Output]:
     _: dataclasses.KW_ONLY
-    entrypoint_name: str | None = 'entrypoint'
-    log_level: str = 'ERROR'
-    logger_name: str | None = 'logger'
+    entrypoint_name: str | None = None
+    log_level: str | None = None
+    logger_name: str | None = None
 
     @staticmethod
-    def set_flag[**Input, Output](parser: argparse.ArgumentParser, entrypoint: Entrypoint[Input, Output], flag) -> None:
+    def set_flag[** Input, Output](
+        parser: argparse.ArgumentParser,
+        entrypoint: _Entrypoint[Input, Output],
+        flag: str,
+    ) -> None:
         if flag == 'return':
             return
 
         parameter = inspect.signature(entrypoint).parameters[flag]
-        flag = flag.replace('_', '-')
         match (parameter.kind, parameter.default == parameter.empty):
             case (parameter.POSITIONAL_ONLY, False):
                 parser.add_argument(
@@ -70,10 +74,10 @@ class CLI[**Input, Output]:
             case (parameter.POSITIONAL_ONLY, True) | (parameter.POSITIONAL_OR_KEYWORD, True):
                 parser.add_argument(flag, type=parameter.annotation)
             case (parameter.KEYWORD_ONLY, True):
-                parser.add_argument(f'--{flag}', required=True, type=parameter.annotation)
+                parser.add_argument(f'--{flag.replace('_', '-')}', required=True, type=parameter.annotation)
             case (parameter.KEYWORD_ONLY, False) | (parameter.POSITIONAL_OR_KEYWORD, False):
                 parser.add_argument(
-                    f'--{flag}',
+                    f'--{flag.replace('_', '-')}',
                     default=parameter.default,
                     help=f'default: {parameter.default}',
                     type=parameter.annotation)
@@ -86,7 +90,7 @@ class CLI[**Input, Output]:
                     type=parameter.annotation)
             case (parameter.VAR_KEYWORD, _):
                 parser.add_argument(
-                    f'--{flag}',
+                    f'--{flag.replace('_', '-')}',
                     default=parameter.default if parameter.default is not parameter.empty else None,
                     help=f'default: {parameter.default}' if parameter.default is not parameter.empty else None,
                     nargs=argparse.ZERO_OR_MORE,
@@ -94,19 +98,13 @@ class CLI[**Input, Output]:
             case _:
                 raise RuntimeError(f'During parser setup for {entrypoint=}: {flag=} has unknown {parameter.kind=}.')
 
-    def set_entrypoint(self, module, parser, entrypoint: Entrypoint = ...) -> None:
-        if entrypoint is ... and (entrypoint := getattr(module, self.entrypoint_name, None)) is None:
-            return
-
+    def set_entrypoint(self, *, parser, entrypoint: _Entrypoint) -> None:
         parser.set_defaults(entrypoint=entrypoint)
 
         for flag in inspect.get_annotations(entrypoint).keys():
             self.set_flag(parser, entrypoint, flag)
 
-    def set_logger(self, module, parser, logger: logging.Logger = None) -> None:
-        if logger is None and (logger := getattr(module, self.logger_name, None)) is None:
-            return
-
+    def set_logger(self, *, parser, logger: logging.Logger) -> None:
         class LogLevelAction(argparse.Action):
             def __call__(self, _parser, namespace, values, option_string=None) -> None:
                 level = logging.getLevelNamesMapping()[values]
@@ -119,21 +117,24 @@ class CLI[**Input, Output]:
             choices=logging.getLevelNamesMapping().keys(),
             default='ERROR')
 
-    def __call__(self, entrypoint: Entrypoint, /) -> Decorated[Input, Output]:
+    def __call__(self, entrypoint: _Entrypoint, /) -> _Decorated[Input, Output]:
+
         module = inspect.getmodule(entrypoint)
 
         parser = argparse.ArgumentParser(module.__doc__)
         parser.set_defaults(entrypoint=lambda: parser.print_help)
 
-        entrypoint.decorations = Decorations(cli=self, parser=parser)
+        logger = getattr(module, self.logger_name, None)
+
+        entrypoint.cli = _Decoration(decorator=self, parser=parser)
+        decorated: _Decorated[Input, Output] = entrypoint  # type: ignore
+
         # Entrypoint can't reliably be found via inspection of modules as modules may only be partially loaded (this
         #  decorator is likely processed while the module is still loading during import-time).
-        stack = [(module, parser, entrypoint)]
+        stack = [(parser, module, entrypoint, logger)]
 
         while stack:
-            module, parser, entrypoint = stack.pop()
-            self.set_entrypoint(module, parser, entrypoint)
-            self.set_logger(module, parser)
+            parser, module, entrypoint, logger = stack.pop()
 
             if module.__name__ == module.__package__:
                 # This is a package. Add its subpackages to the stack to be also be evaluated.
@@ -142,9 +143,27 @@ class CLI[**Input, Output]:
                     sub_module = importlib.import_module(f'{module.__package__}.{name}')
                     sub_parser = subparsers.add_parser(name=name, description=sub_module.__doc__)
                     sub_parser.set_defaults(entrypoint=lambda: sub_parser.print_help)
-                    stack.append((sub_module, sub_parser, None))
+                    sub_entrypoint = getattr(sub_module, self.entrypoint_name, None)
+                    sub_logger = getattr(sub_module, self.logger_name, None)
+                    stack.append((sub_parser, sub_module, sub_entrypoint, sub_logger))
 
-        return entrypoint
+                # TODO(cevans87) the logic here about when to add logger/entrypoint is confusing. Either simplify or
+                #  document.
+                if logger is not None:
+                    self.set_logger(parser=parser, logger=logger)
+                if entrypoint is not None:
+                    parser = subparsers.add_parser(name='.')
+
+            if logger is not None:
+                self.set_logger(parser=parser, logger=logger)
+
+            if entrypoint is not None:
+                self.set_entrypoint(parser=parser, entrypoint=entrypoint)
+
+        return decorated
 
 
-cli = CLI()
+CLI = _Decorator
+# TODO see if I can just call the module (as shown in following line) instead of making this default `cli` instance.
+cli = CLI(entrypoint_name='main', logger_name='logger', log_level='DEBUG')
+__call__ = CLI(entrypoint_name='main', logger_name='logger', log_level='DEBUG').__call__
