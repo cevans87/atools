@@ -55,14 +55,16 @@ def test_flag_types_parses_log_level(flag_types: types.ModuleType) -> None:
 def test_flag_types_recieve_correct_arguments(flag_types: types.ModuleType) -> None:
     assert flag_types.main.cli.run(shlex.split('. 1')) == {'foo': 1}
     assert flag_types.main.cli.run(shlex.split('. 2')) == {'foo': 2}
-    assert flag_types.main.cli.run(shlex.split('with_default')) == {
+    assert flag_types.main.cli.run(shlex.split(
+        'with_default'
+    )) == {
         'positional_only_with_default': 0,
         'positional_or_keyword_with_default': 1,
         'keyword_only_with_default': 2,
     }
-    assert flag_types.main.cli.run(
-        shlex.split('with_default 1 --positional-or-keyword-with-default 2 --keyword-only-with-default 3')
-    ) == {
+    assert flag_types.main.cli.run(shlex.split(
+        'with_default 1 --positional-or-keyword-with-default 2 --keyword-only-with-default 3'
+    )) == {
         'positional_only_with_default': 1,
         'positional_or_keyword_with_default': 2,
         'keyword_only_with_default': 3,
