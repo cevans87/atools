@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-def main(
+def entrypoint(
     positional_only_with_default: int = 0,
     /,
     positional_or_keyword_with_default: int = 1,

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+from atools import cli
+
+
+@cli
 def main(
     *var_positional: list[str],
     **var_keyword: dict[str, str],

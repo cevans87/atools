@@ -4,5 +4,5 @@ from atools import cli
 
 
 @cli
-def entrypoint(foo: int, /) -> dict[str, int]:
+async def entrypoint(answer: int) -> dict[str, int]:
     return locals()

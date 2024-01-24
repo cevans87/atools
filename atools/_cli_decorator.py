@@ -3,29 +3,41 @@
 """
 from __future__ import annotations
 import argparse
+import asyncio
 import dataclasses
 import inspect
 import importlib
-import logging
 import pkgutil
 import typing
 import sys
 
-log = logging.getLogger(__package__)
-logging.basicConfig(level=logging.ERROR)
-
 
 @dataclasses.dataclass(frozen=True)
-class _Decoration[** Input, Output]:
+class _Decoration[** Params, Return]:
+    """CLI decoration with a `.parser` instance and `.run` function.
+    """
     _: dataclasses.KW_ONLY
-    decorator: _Decorator[Input, Output]
     parser: argparse.ArgumentParser
 
     def run(self, args: list[str] = ...) -> object:
+        f"""Parses args, runs parser's registered entrypoint with parsed args, and return the result.
+
+        Note that the entrypoint that is run is determined by the parser. It may be an entrypoint in a submodule of the
+        decorated entrypoint.
+        
+        If the decorated function is a couroutinefunction, this will run it in the default asyncio event loop.
+
+        Args (Positional or Keyword):
+            args (default: sys.argv[1]): Arguments to be parsed and passed to parser's registered entrypoint.
+
+        Returns:
+            object: Result of executing parser's registered entrypoint with given args.
+        """
         args = sys.argv[1:] if args is ... else args
+
         parsed_args = vars(self.parser.parse_args(args))
 
-        # Note that this may be the entrypoint of a subparser.
+        # Note that this may be the entrypoint of submodule, not the one that is decorated.
         entrypoint = parsed_args['entrypoint']
         args, kwargs = [], {}
         for parameter in inspect.signature(entrypoint).parameters.values():
@@ -34,136 +46,136 @@ class _Decoration[** Input, Output]:
             else:
                 kwargs[parameter.name] = parsed_args[parameter.name]
 
-        return entrypoint(*args, **kwargs)
+        result = entrypoint(*args, **kwargs)
+        if inspect.iscoroutinefunction(entrypoint):
+            result = asyncio.run(result)
+
+        return result
 
 
-class _Entrypoint[** Input, Output](typing.Protocol):
-    __call__: typing.Callable[Input, Output]
+class _Entrypoint[** Params, Return](typing.Protocol):
+    __call__: typing.Callable[Params, Return]
 
 
-class _Decorated[** Input, Output](typing.Protocol):
-    __call__: typing.Callable[Input, Output]
-    cli: _Decoration[Input, Output]
+class _Decorated[** Params, Return](typing.Protocol):
+    __call__: typing.Callable[Params, Return]
+    cli: _Decoration[Params, Return]
 
 
 @dataclasses.dataclass(frozen=True)
-class _Decorator[** Input, Output]:
+class _Decorator[** Params, Return]:
+    """Decorate a function, adding a `.cli.parser` instance and `.cli.run` function.
+
+    When created, specifying a `submodules_entrypoint_name` indicates that the decorator should create a hierarchical
+    parser with subcommand structure corresponding to submodule structure. Any module with a function matching given
+    `submodules_entrypoint_name` have a corresponding CLI subcommand generated with an equivalent signature. Note that
+    all entrypoints must be fully annotated with types that can be instantiated (e.g. `dict[str, int]` instead of
+    `collections.abc.Dict[str, int]`).
+
+    Given a program with the following file structure (column 1), python entrypoints (column 2), the CLI follows
+    (column 3).
+
+              1. Structure        2. entrypoint signature             3. generated CLI signature
+        (a)   | __main__.py                                           prog [-h] {.|foo|baz|quux}
+              + prog
+        (b)     | __init__.py     entrypoint()                        prog . [-h]
+                | foo.py          entrypoint(pos: int, /)             prog foo [-h] POS
+        (a)     | _bar.py         entrypoint(pos: int = 42, /)        prog _bar [-h] [POS]
+                + baz
+        (c)        | __init__.py   entrypoint(pos_or_kwd: str)         prog baz . [-h] --pos-or-kwd POS_OR_KWD
+                  | qux.py        entrypoint(pos_or_kwd: str = 'hi')  prog baz qux [-h] [--pos-or-kwd POS_OR_KWD]
+                + quux
+        (d)       | __init__.py   entrypoint(*args: list)             RuntimeError!!!
+        (d)       | corge.py      entrypoint(**kwargs: dict)          RuntimeError!!!
+
+    Note for the diagram above:
+        (a) Subcommands that start with underscores are hidden in the CLI signature. They are, however, valid.
+        (b) The only `entrypoint` that needs to be decorated is in the toplevel __init__.py.
+        (c) Entrypoints in an __init__.py correspond to a `.` generated subcommand.
+        (d) Variadic args and kwargs are unsupported.
+
+    Args (Keyword):
+        submodules_entrypoint_name: If given, subcommands are generated for every submodule in the module hierarchy. CLI
+            bindings are generated for each entrypoint found in the submodule structure.
+    """
     _: dataclasses.KW_ONLY
-    entrypoint_name: str | None = None
-    log_level: str | None = None
-    logger_name: str | None = None
+    submodules_entrypoint_name: str | None = None
 
     @staticmethod
-    def set_flag[** Input, Output](
-        parser: argparse.ArgumentParser,
-        entrypoint: _Entrypoint[Input, Output],
-        flag: str,
-    ) -> None:
-        if flag == 'return':
-            return
-
-        parameter = inspect.signature(entrypoint).parameters[flag]
+    def _set_parameter(*, parser: argparse.ArgumentParser, parameter: inspect.Parameter) -> None:
         match (parameter.kind, parameter.default == parameter.empty):
+            case (parameter.POSITIONAL_ONLY, True) | (parameter.POSITIONAL_OR_KEYWORD, True):
+                parser.add_argument(
+                    parameter.name,
+                    type=parameter.annotation,
+                )
+            case (parameter.KEYWORD_ONLY, False) | (parameter.POSITIONAL_OR_KEYWORD, False):
+                parser.add_argument(
+                    f'--{parameter.name.replace('_', '-')}',
+                    default=parameter.default,
+                    help=f'default: {parameter.default}',
+                    type=parameter.annotation,
+                )
             case (parameter.POSITIONAL_ONLY, False):
                 parser.add_argument(
-                    flag,
+                    parameter.name,
                     default=parameter.default,
                     help=f'default: {parameter.default}',
                     nargs=argparse.OPTIONAL,
-                    type=parameter.annotation)
-            case (parameter.POSITIONAL_ONLY, True) | (parameter.POSITIONAL_OR_KEYWORD, True):
-                parser.add_argument(flag, type=parameter.annotation)
+                    type=parameter.annotation,
+                )
             case (parameter.KEYWORD_ONLY, True):
-                parser.add_argument(f'--{flag.replace('_', '-')}', required=True, type=parameter.annotation)
-            case (parameter.KEYWORD_ONLY, False) | (parameter.POSITIONAL_OR_KEYWORD, False):
                 parser.add_argument(
-                    f'--{flag.replace('_', '-')}',
-                    default=parameter.default,
-                    help=f'default: {parameter.default}',
-                    type=parameter.annotation)
-            case (parameter.VAR_POSITIONAL, _):
-                parser.add_argument(
-                    flag,
-                    default=parameter.default if parameter.default is not parameter.empty else None,
-                    help=f'default: {parameter.default}' if parameter.default is not parameter.empty else None,
-                    nargs=argparse.ZERO_OR_MORE,
-                    type=parameter.annotation)
-            case (parameter.VAR_KEYWORD, _):
-                parser.add_argument(
-                    f'--{flag.replace('_', '-')}',
-                    default=parameter.default if parameter.default is not parameter.empty else None,
-                    help=f'default: {parameter.default}' if parameter.default is not parameter.empty else None,
-                    nargs=argparse.ZERO_OR_MORE,
-                    type=parameter.annotation)
+                    f'--{parameter.name.replace('_', '-')}',
+                    required=True,
+                    type=parameter.annotation,
+                )
             case _:
-                raise RuntimeError(f'During parser setup for {entrypoint=}: {flag=} has unknown {parameter.kind=}.')
+                raise RuntimeError(f'During parser setup: {parameter.name=} has unsupported {parameter.kind=}.')
 
-    def set_entrypoint(self, *, parser, entrypoint: _Entrypoint) -> None:
+    def _set_entrypoint[** SubParams, SubReturn](
+        self, *, parser, entrypoint: _Entrypoint[SubParams, SubReturn]
+    ) -> None:
         parser.set_defaults(entrypoint=entrypoint)
 
-        for flag in inspect.get_annotations(entrypoint).keys():
-            self.set_flag(parser, entrypoint, flag)
+        for parameter in inspect.signature(entrypoint).parameters.values():
+            self._set_parameter(parser=parser, parameter=parameter)
 
-    def set_logger(self, *, parser, logger: logging.Logger) -> None:
-        class LogLevelAction(argparse.Action):
-            def __call__(self, _parser, namespace, values, option_string=None) -> None:
-                level = logging.getLevelNamesMapping()[values]
-                logger.setLevel(level)
-                setattr(namespace, self.dest, level)
-
-        parser.add_argument(
-            '--log-level',
-            action=LogLevelAction,
-            choices=logging.getLevelNamesMapping().keys(),
-            default='ERROR')
-
-    def __call__(self, entrypoint: _Entrypoint, /) -> _Decorated[Input, Output]:
-
+    def __call__(self, entrypoint: _Entrypoint[Params, Return], /) -> _Decorated[Params, Return]:
         module = inspect.getmodule(entrypoint)
 
         parser = argparse.ArgumentParser(module.__doc__)
         parser.set_defaults(entrypoint=lambda: parser.print_help)
 
-        logger = getattr(module, self.logger_name, None)
+        entrypoint.cli = _Decoration(parser=parser)
+        decorated: _Decorated[Params, Return] = entrypoint  # type: ignore
 
-        entrypoint.cli = _Decoration(decorator=self, parser=parser)
-        decorated: _Decorated[Input, Output] = entrypoint  # type: ignore
-
-        # Entrypoint can't reliably be found via inspection of modules as modules may only be partially loaded (this
-        #  decorator is likely processed while the module is still loading during import-time).
-        stack = [(parser, module, entrypoint, logger)]
+        stack = [(parser, module, entrypoint)]
 
         while stack:
-            parser, module, entrypoint, logger = stack.pop()
+            parser, module, entrypoint = stack.pop()
 
-            if module.__name__ == module.__package__:
+            if (self.submodules_entrypoint_name is not None) and (module.__name__ == module.__package__):
                 # This is a package. Add its subpackages to the stack to be also be evaluated.
-                subparsers = parser.add_subparsers()
+                subparsers = parser.add_subparsers(title='subcommands', metavar='{subcommand}')
                 for _, name, _ in pkgutil.iter_modules(path=module.__path__):
                     sub_module = importlib.import_module(f'{module.__package__}.{name}')
-                    sub_parser = subparsers.add_parser(name=name, description=sub_module.__doc__)
+                    if name.startswith('_'):
+                        sub_parser = subparsers.add_parser(description=sub_module.__doc__, name=name)
+                    else:
+                        sub_parser = subparsers.add_parser(description=sub_module.__doc__, help='', name=name)
                     sub_parser.set_defaults(entrypoint=lambda: sub_parser.print_help)
-                    sub_entrypoint = getattr(sub_module, self.entrypoint_name, None)
-                    sub_logger = getattr(sub_module, self.logger_name, None)
-                    stack.append((sub_parser, sub_module, sub_entrypoint, sub_logger))
+                    sub_entrypoint = getattr(sub_module, self.submodules_entrypoint_name, None)
+                    stack.append((sub_parser, sub_module, sub_entrypoint))
 
-                # TODO(cevans87) the logic here about when to add logger/entrypoint is confusing. Either simplify or
-                #  document.
-                if logger is not None:
-                    self.set_logger(parser=parser, logger=logger)
                 if entrypoint is not None:
-                    parser = subparsers.add_parser(name='.')
-
-            if logger is not None:
-                self.set_logger(parser=parser, logger=logger)
+                    parser = subparsers.add_parser(name='.', help='')
 
             if entrypoint is not None:
-                self.set_entrypoint(parser=parser, entrypoint=entrypoint)
+                self._set_entrypoint(parser=parser, entrypoint=entrypoint)
 
         return decorated
 
 
 CLI = _Decorator
-# TODO see if I can just call the module (as shown in following line) instead of making this default `cli` instance.
-cli = CLI(entrypoint_name='main', logger_name='logger', log_level='DEBUG')
-__call__ = CLI(entrypoint_name='main', logger_name='logger', log_level='DEBUG').__call__
+cli = CLI(submodules_entrypoint_name='entrypoint')

@@ -4,5 +4,5 @@ from atools import cli
 
 
 @cli
-def main() -> dict[str, ...]:
+def entrypoint() -> dict[str, object]:
     return locals()

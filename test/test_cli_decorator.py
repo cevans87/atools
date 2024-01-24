@@ -1,7 +1,6 @@
 import sys
 from collections.abc import Generator
 import importlib
-import logging
 import pathlib
 import pytest
 import shlex
@@ -24,62 +23,80 @@ def flag_types() -> Generator[types.ModuleType, None, None]:
     yield from module('flag_types')
 
 
+@pytest.fixture
+def hidden_subcommand() -> Generator[types.ModuleType, None, None]:
+    yield from module('hidden_subcommand')
+
+
+@pytest.fixture
+def async_entrypoint() -> Generator[types.ModuleType, None, None]:
+    yield from module('async_entrypoint')
+
+
 def test_module_imports(blank: types.ModuleType) -> None:
     assert blank.__file__ == str(pathlib.Path(__file__).parent.absolute() / 'test_cli_modules' / 'blank' / 'blank.py')
 
 
 def test_blank_has_no_children(blank: types.ModuleType) -> None:
-    assert blank.main.cli.parser._subparsers is None
+    assert blank.entrypoint.cli.parser._subparsers is None
 
 
 def test_flag_types_has_children(flag_types: types.ModuleType) -> None:
-    assert flag_types.main.cli.parser._subparsers is not None
+    assert flag_types.entrypoint.cli.parser._subparsers is not None
 
 
-def test_blank_has_no_log_level_flag(blank: types.ModuleType) -> None:
-    assert '--log-level' not in blank.main.cli.parser.format_help()
+def test_flag_types_receive_correct_arguments(flag_types: types.ModuleType) -> None:
+    assert flag_types.entrypoint.cli.run(shlex.split('. 1')) == {'foo': 1}
+    assert flag_types.entrypoint.cli.run(shlex.split('. 2')) == {'foo': 2}
 
 
-def test_flag_types_has_log_level_flag(flag_types: types.ModuleType) -> None:
-    assert '--log-level' in flag_types.main.cli.parser.format_help()
-
-
-def test_flag_types_parses_log_level(flag_types: types.ModuleType) -> None:
-    args = flag_types.main.cli.parser.parse_args(shlex.split('. --log-level INFO 1'))
-    assert args.log_level == logging.INFO
-
-    args = flag_types.main.cli.parser.parse_args(shlex.split('. --log-level DEBUG 1'))
-    assert args.log_level == logging.DEBUG
-
-
-def test_flag_types_recieve_correct_arguments(flag_types: types.ModuleType) -> None:
-    assert flag_types.main.cli.run(shlex.split('. 1')) == {'foo': 1}
-    assert flag_types.main.cli.run(shlex.split('. 2')) == {'foo': 2}
-    assert flag_types.main.cli.run(shlex.split(
+def test_flag_types_with_default_receive_correct_arguments(flag_types: types.ModuleType) -> None:
+    assert flag_types.entrypoint.cli.run(shlex.split(
         'with_default'
     )) == {
         'positional_only_with_default': 0,
         'positional_or_keyword_with_default': 1,
         'keyword_only_with_default': 2,
     }
-    assert flag_types.main.cli.run(shlex.split(
-        'with_default 1 --positional-or-keyword-with-default 2 --keyword-only-with-default 3'
+    assert flag_types.entrypoint.cli.run(shlex.split(
+        'with_default 2001 --positional-or-keyword-with-default 2049 --keyword-only-with-default 2077'
     )) == {
-        'positional_only_with_default': 1,
-        'positional_or_keyword_with_default': 2,
-        'keyword_only_with_default': 3,
+        'positional_only_with_default': 2001,
+        'positional_or_keyword_with_default': 2049,
+        'keyword_only_with_default': 2077,
     }
 
-    #for i in range(2):
-    #    assert flag_types.main.cli.run(shlex.split(f'without_default {i} {i + 1} --keyword-only {i + 2}')) == {
-    #        'positional_only': i,
-    #        'positional_or_keyword': i + 1,
-    #        'keyword_only': i + 2,
-    #    }
 
-    #assert flag_types.main.cli.run(shlex.split('variadic 1 2 3 --kw0 foo bar --kw1 baz --kw2 qux quux')) == {
-    #    'var_positional': [],
-    #    'var_keyword': {},
-    #}
+def test_flag_types_without_default_receive_correct_arguments(flag_types: types.ModuleType) -> None:
+    assert flag_types.entrypoint.cli.run(shlex.split(
+        f'without_default 1 2 --keyword-only 3'
+    )) == {
+        'positional_only': 1,
+        'positional_or_keyword': 2,
+        'keyword_only': 3,
+    }
 
 
+def test_variadic_is_unsupported() -> None:
+    with pytest.raises(RuntimeError):
+        next(module('variadic'))
+
+
+def test_hidden_subcommand_does_not_show_subcommand(hidden_subcommand: types.ModuleType) -> None:
+    assert '_should_not_show' not in hidden_subcommand.entrypoint.cli.parser.format_help()
+
+
+def test_hidden_subcommand_parses_hidden_subcommand(hidden_subcommand: types.ModuleType) -> None:
+    assert hidden_subcommand.entrypoint.cli.run(shlex.split(
+        f'_should_not_show hidden_subcommand_works'
+    )) == {
+        'foo': 'hidden_subcommand_works',
+    }
+
+
+def test_async_entrypoint_works(async_entrypoint: types.ModuleType) -> None:
+    assert async_entrypoint.entrypoint.cli.run(shlex.split(
+        '42'
+    )) == {
+        'answer': 42
+    }
