@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
-from atools import cli
+import atools
 
 
-@cli
+@atools.CLI(submodules=True)
 def entrypoint() -> dict[str, bool]:
     return locals()

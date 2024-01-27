@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-from atools import cli
+import atools
 
 
-@cli
+@atools.CLI()
 def main(
-    *var_positional: list[str],
-    **var_keyword: dict[str, str],
-) -> dict[str, list[str] | dict[str, str]]:
+    *var_positional: int,
+    **var_keyword: int,
+) -> dict[str, list[str] | dict[str, int]]:
     return locals()
