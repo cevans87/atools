@@ -105,11 +105,11 @@ def test_variadic_is_unsupported() -> None:
         next(module('variadic'))
 
 
-def test_hidden_subcommand_does_not_show_subcommand(hidden_subcommand: types.ModuleType) -> None:
+def test_dash_help_does_not_show_hidden_subcommand(hidden_subcommand: types.ModuleType) -> None:
     assert '_should_not_show' not in hidden_subcommand.entrypoint.cli._parser.format_help()
 
 
-def test_hidden_subcommand_parses_hidden_subcommand(hidden_subcommand: types.ModuleType) -> None:
+def test_execute_hidden_subcommand_works(hidden_subcommand: types.ModuleType) -> None:
     assert hidden_subcommand.entrypoint.cli.run(shlex.split(
         f'_should_not_show hidden_subcommand_works'
     )) == {
@@ -230,6 +230,32 @@ def test_parses_dict_of_dict_parameter() -> None:
         entrypoint.cli.run(shlex.split('"{True: {4.0: {42: False}}}"'))
 
 
+def test_parses_frozenset_parameter() -> None:
+    @atools.CLI()
+    def entrypoint(foo: frozenset[int]) -> dict[str, frozenset[int]]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split(
+        '\'{1, 2, 3, 4}\''
+    )) == {
+        'foo': frozenset({1, 2, 3, 4})
+    }
+
+
+def test_parses_list_parameter() -> None:
+    @atools.CLI()
+    def entrypoint(foo: list[int]) -> dict[str, list[int]]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split(
+        '\'[1, 2, 3, 4]\''
+    )) == {
+        'foo': [1, 2, 3, 4]
+    } != {
+        'foo': (1, 2, 3, 4)
+    }
+
+
 def test_parses_set_parameter() -> None:
     @atools.CLI()
     def entrypoint(foo: set[int]) -> dict[str, set[int]]:
@@ -297,3 +323,34 @@ def test_parses_custom_container_type_parameter() -> None:
     } != {
         'foo': tuple((False, 3.14, 42, 'hi!', 'bye!')),
     }
+
+
+def test_parses_annotated_int() -> None:
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[int, 'This is my annotation']
+    ) -> dict[str, int]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('42')) == {'foo': 42}
+
+
+def test_dash_help_prints_parameter_annotation() -> None:
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[int, 'This is my annotation.']
+    ) -> dict[str, int]:
+        return locals()
+
+    assert 'This is my annotation.' in entrypoint.cli._parser.format_help()
+
+
+def test_dash_help_prints_entrypoint_doc() -> None:
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[int, 'This is my annotation.']
+    ) -> dict[str, int]:
+        """What's up, Doc?"""
+        return locals()
+
+    assert """What's up, Doc?""" in entrypoint.cli._parser.format_help()

@@ -25,10 +25,10 @@ Single-entrypoint example:
 Multiple-entrypoint example:
 
     - file: prog/__init__.py
-        from atools.cli import CLI
+        import atools
 
 
-        @CLI(submodules=True)  # This will find entrypoints in submodules named `entrypoint`.
+        @atools.CLI(submodules=True)  # This will find entrypoints in submodules named `entrypoint`.
         def entrypoint(a: int, /, b: str, c: bool = True, *, d: float, e: tuple = tuple()) -> ...:
             ...
 
@@ -41,11 +41,11 @@ Multiple-entrypoint example:
             entrypoint.cli.run()
 
 """
+from __future__ import annotations
 import argparse
 import ast
 import asyncio
 import builtins
-import functools
 import dataclasses
 import inspect
 import importlib
@@ -118,8 +118,7 @@ class _Decorator[** Params, Return]:
     When created, setting `submodules` to True indicates that the decorator should create a hierarchical parser with
     subcommand structure corresponding to submodule structure starting with the decorated function's module. Any module
     with a function name matching given `entrypoint` name have a corresponding CLI subcommand generated with an
-    equivalent CLI signature. Note that all entrypoint parameters must be fully annotated with types that can be
-    instantiated (e.g. `dict[str, int]` instead of `collections.abc.Dict[str, int]`).
+    equivalent CLI signature.
 
     Parser subcommand documentation is generated from corresponding module docstrings.
 
@@ -165,6 +164,8 @@ class _Decorator[** Params, Return]:
         builtins.int,
         builtins.str,
     })
+
+    _types: typing.ClassVar[frozenset[type]] = _container_types | _primitive_types
 
     @classmethod
     def _set_t[T](cls, value: object, t: type[T]) -> T:
@@ -217,14 +218,8 @@ class _Decorator[** Params, Return]:
                 value: tuple[()]
                 value: T = tuple()
 
-            # Custom type. It must be instantiable with a single argument that we can parse.
-            case V, T, (A0,):
-                value: V
-                value: T = T(cls._set_t(value=value, t=A0))
-            case V, T, () if V in cls._primitive_types and T not in cls._primitive_types:
-                value: V
-                value: T = T(value)
-            case V, T, ((A,) | A) if V in cls._container_types and T not in cls._container_types and A:
+            # Custom type.
+            case V, T, _ if V in cls._types and T not in cls._types:
                 value: V
                 value: T = T(value)
             case _:
@@ -246,27 +241,22 @@ class _Decorator[** Params, Return]:
             case _:
                 raise RuntimeError(f'During parser setup: {parameter.name=} has unsupported {parameter.kind=}.')
 
+        t = parameter.annotation
+        help_parts = []
+        if typing.get_origin(t) is typing.Annotated:
+            args = typing.get_args(t)
+            t = args[0]
+            help_parts.append(args[1])
         if parameter.default == parameter.empty:
             flag.required = True
         else:
             flag.default = parameter.default
-            flag.help = f'default: {parameter.default}'
+            help_parts.append(f'Default: {parameter.default}')
             flag.nargs = argparse.OPTIONAL
 
-        #def foo(value):
-        #    try:
-        #        return cls._set_t(
-        #            value=value if parameter.annotation is str else ast.literal_eval(value),
-        #            t=parameter.annotation,
-        #        )
-        #    except Exception as e:
-        #        raise
+        flag.help = ' '.join(help_parts)
 
-        #flag.type = foo
-        flag.type = lambda value: cls._set_t(
-            value=value if parameter.annotation is str else ast.literal_eval(value),
-            t=parameter.annotation,
-        )
+        flag.type = lambda value: cls._set_t(value=value if t is str else ast.literal_eval(value), t=t)
 
     def _set_entrypoint[** SubParams, SubReturn](
         self, *, parser, entrypoint: _Entrypoint[SubParams, SubReturn]
@@ -279,7 +269,7 @@ class _Decorator[** Params, Return]:
     def __call__(self, entrypoint: _Entrypoint[Params, Return], /) -> _Decorated[Params, Return]:
         module = inspect.getmodule(entrypoint)
 
-        parser = argparse.ArgumentParser(module.__doc__)
+        parser = argparse.ArgumentParser(description=entrypoint.__doc__ or module.__doc__)
         parser.set_defaults(entrypoint=parser.print_help)
 
         entrypoint.cli = _Decoration(_parser=parser)
@@ -304,7 +294,7 @@ class _Decorator[** Params, Return]:
                     stack.append((sub_parser, sub_module, sub_entrypoint))
 
                 if entrypoint is not None:
-                    parser = subparsers.add_parser(name='.', help='')
+                    parser = subparsers.add_parser(name='.', help=entrypoint.__doc__ or module.__doc__)
 
             if entrypoint is not None:
                 self._set_entrypoint(parser=parser, entrypoint=entrypoint)
