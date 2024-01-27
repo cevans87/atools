@@ -120,6 +120,9 @@ class _Decorator[** Params, Return]:
     with a function name matching given `entrypoint` name have a corresponding CLI subcommand generated with an
     equivalent CLI signature.
 
+    TODO Mention that types.Dict is equivalent to dict, etc. We get it right, as long as typing.get_origin return an
+     instantiable type.
+
     Parser subcommand documentation is generated from corresponding module docstrings.
 
     Given a program with the following file structure (column 1), python entrypoints (column 2), the generated CLI
