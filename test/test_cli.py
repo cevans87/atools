@@ -1,38 +1,40 @@
-from collections.abc import Generator
+import argparse
+import collections.abc
 import importlib
 import pathlib
-import pytest
 import shlex
 import types
 import typing
 import sys
 
+import pytest
+
 import atools
 
 
-def module(name: str) -> Generator[types.ModuleType, None, None]:
+def module(name: str) -> collections.abc.Generator[types.ModuleType, None, None]:
     sys.path.insert(0, str(pathlib.Path(__file__).parent.absolute() / 'test_cli_modules' / name))
     yield importlib.import_module(name)
     sys.path.pop(0)
 
 
 @pytest.fixture
-def blank() -> Generator[types.ModuleType, None, None]:
+def blank() -> collections.abc.Generator[types.ModuleType, None, None]:
     yield from module('blank')
 
 
 @pytest.fixture
-def flag_types() -> Generator[types.ModuleType, None, None]:
+def flag_types() -> collections.abc.Generator[types.ModuleType, None, None]:
     yield from module('flag_types')
 
 
 @pytest.fixture
-def hidden_subcommand() -> Generator[types.ModuleType, None, None]:
+def hidden_subcommand() -> collections.abc.Generator[types.ModuleType, None, None]:
     yield from module('hidden_subcommand')
 
 
 @pytest.fixture
-def no_submodules() -> Generator[types.ModuleType, None, None]:
+def no_submodules() -> collections.abc.Generator[types.ModuleType, None, None]:
     yield from module('no_submodules')
 
 
@@ -98,11 +100,6 @@ def test_flag_types_without_default_receive_correct_arguments() -> None:
         entrypoint.cli.run(shlex.split(f'1 2'))
     with pytest.raises(SystemExit):
         entrypoint.cli.run(shlex.split(f'1 --keyword-only 3'))
-
-
-def test_variadic_is_unsupported() -> None:
-    with pytest.raises(RuntimeError):
-        next(module('variadic'))
 
 
 def test_dash_help_does_not_show_hidden_subcommand(hidden_subcommand: types.ModuleType) -> None:
@@ -340,9 +337,90 @@ def test_dash_help_prints_parameter_annotation() -> None:
     def entrypoint(
         foo: typing.Annotated[int, 'This is my annotation.']
     ) -> dict[str, int]:
-        return locals()
+        """"""
 
     assert 'This is my annotation.' in entrypoint.cli._parser.format_help()
+
+
+def test_positional_only_without_default_works() -> None:
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[int, 'Help text for foo.'],
+        /,
+    ) -> dict[str, int]:
+        return locals()
+
+    with pytest.raises(SystemExit):
+        entrypoint.cli.run(shlex.split(''))
+    assert entrypoint.cli.run(shlex.split('42')) == {'foo': 42}
+
+
+def test_positional_only_with_default_works() -> None:
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[int, 'Help text for foo.'] = 0,
+        /,
+    ) -> dict[str, int]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('')) == {'foo': 0}
+    assert entrypoint.cli.run(shlex.split('42')) == {'foo': 42}
+
+
+def test_positional_or_keyword_without_default_works() -> None:
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[int, 'Help text for foo.'],
+    ) -> dict[str, int]:
+        return locals()
+
+    with pytest.raises(SystemExit):
+        entrypoint.cli.run(shlex.split(''))
+    assert entrypoint.cli.run(shlex.split('42')) == {'foo': 42}
+
+
+def test_positional_or_keyword_with_default_works() -> None:
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[int, 'Help text for foo.'] = 0,
+    ) -> dict[str, int]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('')) == {'foo': 0}
+    assert entrypoint.cli.run(shlex.split('--foo 42')) == {'foo': 42}
+
+
+def test_keyword_only_without_default_works() -> None:
+    @atools.CLI()
+    def entrypoint(
+        *,
+        foo: typing.Annotated[int, 'Help text for foo.'],
+    ) -> dict[str, int]:
+        return locals()
+
+    with pytest.raises(SystemExit):
+        entrypoint.cli.run(shlex.split(''))
+    assert entrypoint.cli.run(shlex.split('--foo 42')) == {'foo': 42}
+
+
+def test_keyword_only_with_default_works() -> None:
+    @atools.CLI()
+    def entrypoint(
+        *,
+        foo: typing.Annotated[int, 'Help text for foo.'] = 0,
+    ) -> dict[str, int]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('')) == {'foo': 0}
+    assert entrypoint.cli.run(shlex.split('--foo 42')) == {'foo': 42}
+
+
+def test_var_positional_works() -> None:
+    ...
+
+
+def test_var_keyword_works() -> None:
+    ...
 
 
 def test_dash_help_prints_entrypoint_doc() -> None:
@@ -351,6 +429,19 @@ def test_dash_help_prints_entrypoint_doc() -> None:
         foo: typing.Annotated[int, 'This is my annotation.']
     ) -> dict[str, int]:
         """What's up, Doc?"""
-        return locals()
 
     assert """What's up, Doc?""" in entrypoint.cli._parser.format_help()
+
+
+def test_annotated_count_action() -> None:
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[int, atools.CLI.Metadata[int](name_or_flags=['-f', '--foo'], action='count')] = 0,
+    ) -> dict[str, int]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('')) == {'foo': 0}
+    assert entrypoint.cli.run(shlex.split('--foo')) == {'foo': 1}
+    assert entrypoint.cli.run(shlex.split('--foo --foo')) == {'foo': 2}
+    assert entrypoint.cli.run(shlex.split('-f --foo')) == {'foo': 2}
+    assert entrypoint.cli.run(shlex.split('-ff')) == {'foo': 2}

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# TODO(cevans87): -v -vv -vvv
+
 """Provides `CLI` decorator class and sane-default instantiated `cli` decorator instance.
 
 The decorator may be used to simplify generation of a CLI based entirely on decorated entrypoint function signature.
@@ -47,12 +49,15 @@ import ast
 import asyncio
 import builtins
 import dataclasses
+import enum
 import inspect
 import importlib
 import pkgutil
 import types
 import typing
 import sys
+
+import pydantic
 
 
 @dataclasses.dataclass(frozen=True)
@@ -109,50 +114,33 @@ class _Decorated[** Params, Return](typing.Protocol):
 
 
 @dataclasses.dataclass(frozen=True)
-class _Decorator[** Params, Return]:
-    """Decorate a function, adding `<decorated_function>.cli.run` function.
-
-    The `.cli.run` function parses command line arguments (e.g. `sys.argv[1:]`) and executes the decorated function with
-    the parsed arguments.
-
-    When created, setting `submodules` to True indicates that the decorator should create a hierarchical parser with
-    subcommand structure corresponding to submodule structure starting with the decorated function's module. Any module
-    with a function name matching given `entrypoint` name have a corresponding CLI subcommand generated with an
-    equivalent CLI signature.
-
-    TODO Mention that types.Dict is equivalent to dict, etc. We get it right, as long as typing.get_origin return an
-     instantiable type.
-
-    Parser subcommand documentation is generated from corresponding module docstrings.
-
-    Given a program with the following file structure (column 1), python entrypoints (column 2), the generated CLI
-    signature follows (column 3).
-
-              1. Structure          2. entrypoint signature             3. generated CLI signature
-        (a)   |- __main__.py                                            prog [-h] {.|foo|baz|quux}
-              |- prog
-        (b)      |- __init__.py     entrypoint()                        prog . [-h]
-                 |- foo.py          entrypoint(pos: int, /)             prog foo [-h] POS
-        (a)      |- _bar.py         entrypoint(pos: int = 42, /)        prog _bar [-h] [POS]
-                 |- baz
-        (c)      |  |- __init__.py  entrypoint(pos_or_kwd: str)         prog baz . [-h] --pos-or-kwd POS_OR_KWD
-                 |  |- qux.py       entrypoint(pos_or_kwd: str = 'hi')  prog baz qux [-h] [--pos-or-kwd POS_OR_KWD]
-                 |- quux
-        (d)         |- __init__.py  entrypoint(*args: list)             Decoration fails with RuntimeError!
-        (d)         |- corge.py     entrypoint(**kwargs: dict)          Decoration fails with RuntimeError!
-
-    Note for the diagram above:
-        (a) Subcommands that start with underscores are hidden in the CLI signature. They are, however, valid.
-        (b) The only `entrypoint` that needs to be decorated is in the toplevel __init__.py.
-        (c) Entrypoints in an __init__.py correspond to a `.` CLI subcommand.
-        (d) Variadic args and kwargs are unsupported.
-
-    Args (Keyword):
-        submodules: If True, subcommands are generated for every submodule in the module hierarchy. CLI bindings are
-            generated for each submodule top-level function with name matching decorated entrypoint name.
-    """
+class _Metadata[T]:
     _: dataclasses.KW_ONLY
-    submodules: bool = False
+    name_or_flags: list[str] = ...
+    action: typing.Literal[
+        'store',
+        'store_const',
+        'store_true',
+        'store_false',
+        'append',
+        'append_const',
+        'count',
+        'help',
+        'version',
+    ] = ...
+    choices: typing.Container[T] = ...
+    const: T = ...
+    default: T = ...
+    dest: str = ...
+    help: str = ...
+    metavar: str | None = ...
+    nargs: pydantic.NonNegativeInt | typing.Literal[
+        '?',
+        '*',
+        '+'
+    ] = ...
+    required: bool = ...
+    type: typing.Callable[[str], T] = ...
 
     _container_types: typing.ClassVar[frozenset[type]] = frozenset({
         builtins.dict,
@@ -167,8 +155,94 @@ class _Decorator[** Params, Return]:
         builtins.int,
         builtins.str,
     })
-
     _types: typing.ClassVar[frozenset[type]] = _container_types | _primitive_types
+
+    @classmethod
+    def of_parameter(cls, parameter: inspect.Parameter, /) -> _Metadata[T]:
+        params = _Metadata()
+        t = parameter.annotation
+        help_parts = []
+        if typing.get_origin(t) is typing.Annotated:
+            t, *args = typing.get_args(t)
+            help_parts += [*filter(lambda arg: isinstance(arg, str), args)]
+            for override_params in filter(lambda arg: isinstance(arg, _Metadata), args):
+                params = dataclasses.replace(
+                    params, **dict(filter(lambda item: item[1] is not ..., dataclasses.asdict(override_params).items()))
+                )
+
+        if params.name_or_flags is ...:
+            match (parameter.kind, parameter.default == parameter.empty):
+                case (
+                    (parameter.POSITIONAL_ONLY, _)
+                    | (parameter.POSITIONAL_OR_KEYWORD, True)
+                    | (parameter.VAR_POSITIONAL, _)
+                ):
+                    params = dataclasses.replace(params, name_or_flags=[parameter.name])
+                case (
+                    (parameter.KEYWORD_ONLY, _)
+                    | (parameter.POSITIONAL_OR_KEYWORD, False)
+                    | (parameter.VAR_KEYWORD, _)
+                ):
+                    params = dataclasses.replace(params, name_or_flags=[f'--{parameter.name.replace('_', '-')}'])
+
+        if params.action is ...:
+            match t, parameter.default:
+                case builtins.bool, False:
+                    params = dataclasses.replace(params, action='store_true')
+                case builtins.bool, True:
+                    params = dataclasses.replace(params, action='store_false')
+                case builtins.bool, parameter.empty:
+                    ...
+                # TODO(cevans87): Test that this works with both list and tuple.
+                case (builtins.list | builtins.tuple), _:
+                    params = dataclasses.replace(params, action='append')
+
+        if params.choices is ...:
+            match t:
+                case typing.Literal:
+                    params = dataclasses.replace(params, choices=tuple(typing.get_args(t)))
+                case enum.Enum:
+                    params = dataclasses.replace(
+                        params,
+                        choices=tuple(map(lambda value: value.name, t)),
+                        type=lambda value: getattr(t, value)
+                    )
+
+        # No automatic actions needed for 'const'.
+
+        if (params.default is ...) and (parameter.default != parameter.empty):
+            params = dataclasses.replace(params, default=parameter.default)
+
+        # No automatic actions needed for 'dest'.
+
+        if params.help is ...:
+            if params.default is not ...:
+                help_parts += [f'Default:', str(params.default)]
+            params = dataclasses.replace(params, help=' '.join(help_parts))
+
+        # No automatic actions needed for 'metavar'.
+
+        if params.nargs is ...:
+            match parameter.kind, t, parameter.default == parameter.empty:
+                case parameter.POSITIONAL_ONLY, _, False:
+                    params = dataclasses.replace(params, nargs='?')
+                case (parameter.VAR_POSITIONAL, _, _) | (parameter.VAR_KEYWORD, _, _):
+                    params = dataclasses.replace(params, nargs='*')
+                case _, (typing.List | typing.Tuple), _:
+                    params = dataclasses.replace(params, nargs='+')
+
+        if params.required is ...:
+            match parameter.kind, parameter.default == parameter.empty:
+                case parameter.KEYWORD_ONLY, True:
+                    params = dataclasses.replace(params, required=True)
+
+        if (params.type is ...) and (params.action not in {'count', 'store_false', 'store_true'}):
+            params = dataclasses.replace(
+                params,
+                type=lambda value: cls._set_t(value=value if t is str else ast.literal_eval(value), t=t)
+            )
+
+        return params
 
     @classmethod
     def _set_t[T](cls, value: object, t: type[T]) -> T:
@@ -221,6 +295,11 @@ class _Decorator[** Params, Return]:
                 value: tuple[()]
                 value: T = tuple()
 
+            # Enum type.
+            case builtins.str, enum.Enum, _:
+                value: str
+                value: T = getattr(t, value)
+
             # Custom type.
             case V, T, _ if V in cls._types and T not in cls._types:
                 value: V
@@ -230,44 +309,69 @@ class _Decorator[** Params, Return]:
 
         return value
 
-    @classmethod
-    def _set_parameter(cls, *, parser: argparse.ArgumentParser, parameter: inspect.Parameter) -> None:
-        match parameter.kind:
-            case parameter.POSITIONAL_ONLY:
-                flag = parser.add_argument(parameter.name)
-            case parameter.POSITIONAL_OR_KEYWORD if parameter.default == parameter.empty:
-                flag = parser.add_argument(parameter.name)
-            case parameter.POSITIONAL_OR_KEYWORD if parameter.default != parameter.empty:
-                flag = parser.add_argument(f'--{parameter.name.replace('_', '-')}')
-            case parameter.KEYWORD_ONLY:
-                flag = parser.add_argument(f'--{parameter.name.replace('_', '-')}')
-            case _:
-                raise RuntimeError(f'During parser setup: {parameter.name=} has unsupported {parameter.kind=}.')
 
-        t = parameter.annotation
-        help_parts = []
-        if typing.get_origin(t) is typing.Annotated:
-            args = typing.get_args(t)
-            t = args[0]
-            help_parts.append(args[1])
-        if parameter.default == parameter.empty:
-            flag.required = True
-        else:
-            flag.default = parameter.default
-            help_parts.append(f'Default: {parameter.default}')
-            flag.nargs = argparse.OPTIONAL
+@dataclasses.dataclass(frozen=True)
+class _Decorator[** Params, Return]:
+    """Decorate a function, adding `<decorated_function>.cli.run` function.
 
-        flag.help = ' '.join(help_parts)
+    The `.cli.run` function parses command line arguments (e.g. `sys.argv[1:]`) and executes the decorated function with
+    the parsed arguments.
 
-        flag.type = lambda value: cls._set_t(value=value if t is str else ast.literal_eval(value), t=t)
+    When created, setting `submodules` to True indicates that the decorator should create a hierarchical parser with
+    subcommand structure corresponding to submodule structure starting with the decorated function's module. Any module
+    with a function name matching given `entrypoint` name have a corresponding CLI subcommand generated with an
+    equivalent CLI signature.
 
-    def _set_entrypoint[** SubParams, SubReturn](
-        self, *, parser, entrypoint: _Entrypoint[SubParams, SubReturn]
-    ) -> None:
+    TODO Mention that types.Dict is equivalent to dict, etc. We get it right, as long as typing.get_origin return an
+     instantiable type.
+
+    Parser subcommand documentation is generated from corresponding module docstrings.
+
+    Given a program with the following file structure (column 1), python entrypoints (column 2), the generated CLI
+    signature follows (column 3).
+
+              1. Structure          2. entrypoint signature             3. generated CLI signature
+        (a)   |- __main__.py                                            prog [-h] {.|foo|baz|quux}
+              |- prog
+        (b)      |- __init__.py     entrypoint()                        prog . [-h]
+                 |- foo.py          entrypoint(pos: int, /)             prog foo [-h] POS
+        (a)      |- _bar.py         entrypoint(pos: int = 42, /)        prog _bar [-h] [POS]
+                 |- baz
+        (c)      |  |- __init__.py  entrypoint(pos_or_kwd: str)         prog baz . [-h] --pos-or-kwd POS_OR_KWD
+                 |  |- qux.py       entrypoint(pos_or_kwd: str = 'hi')  prog baz qux [-h] [--pos-or-kwd POS_OR_KWD]
+                 |- quux
+        (d)         |- __init__.py  entrypoint(*args: list)             Decoration fails with RuntimeError!
+        (d)         |- corge.py     entrypoint(**kwargs: dict)          Decoration fails with RuntimeError!
+
+    Note for the diagram above:
+        (a) Subcommands that start with underscores are hidden in the CLI signature. They are, however, valid.
+        (b) The only `entrypoint` that needs to be decorated is in the toplevel __init__.py.
+        (c) Entrypoints in an __init__.py correspond to a `.` CLI subcommand.
+        (d) Variadic args and kwargs are unsupported.
+
+    Args (Keyword):
+        submodules: If True, subcommands are generated for every submodule in the module hierarchy. CLI bindings are
+            generated for each submodule top-level function with name matching decorated entrypoint name.
+    """
+    _: dataclasses.KW_ONLY
+    # TODO(cevans87): Allow a function that finds submodules.
+    submodules: bool = False
+
+    Metadata: typing.ClassVar[type[_Metadata]] = _Metadata
+
+    @staticmethod
+    def _set_entrypoint[** SubParams, SubReturn](*, parser, entrypoint: _Entrypoint[SubParams, SubReturn]) -> None:
         parser.set_defaults(entrypoint=entrypoint)
 
         for parameter in inspect.signature(entrypoint).parameters.values():
-            self._set_parameter(parser=parser, parameter=parameter)
+            metadata = _Metadata.of_parameter(parameter)
+            parser.add_argument(
+                *metadata.name_or_flags,
+                **dict(filter(
+                    lambda item: item[0] != 'name_or_flags' and item[1] is not ...,
+                    dataclasses.asdict(metadata).items())
+                )
+            )
 
     def __call__(self, entrypoint: _Entrypoint[Params, Return], /) -> _Decorated[Params, Return]:
         module = inspect.getmodule(entrypoint)
@@ -306,4 +410,3 @@ class _Decorator[** Params, Return]:
 
 
 CLI = _Decorator
-cli = CLI()
