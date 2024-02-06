@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 
-from hidden_subcommand import entrypoint
+import importlib
+
+import atools
 
 
 if __name__ == '__main__':
-    entrypoint.cli.run()
-
+    importlib.import_module('hidden_subcommand')
+    atools.CLI(name=__package__).run()

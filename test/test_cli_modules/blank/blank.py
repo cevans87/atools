@@ -3,6 +3,6 @@
 import atools
 
 
-@atools.CLI(submodules=True)
+@atools.CLI()
 def entrypoint() -> dict[str, object]:
     return locals()

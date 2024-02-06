@@ -1,12 +1,14 @@
-import argparse
 import collections.abc
+import enum
 import importlib
+import logging
 import pathlib
 import shlex
 import types
 import typing
 import sys
 
+import pydantic
 import pytest
 
 import atools
@@ -19,36 +21,33 @@ def module(name: str) -> collections.abc.Generator[types.ModuleType, None, None]
 
 
 @pytest.fixture
-def blank() -> collections.abc.Generator[types.ModuleType, None, None]:
-    yield from module('blank')
+def blank() -> types.ModuleType:
+    from .test_cli_modules.blank import blank
+
+    return blank
 
 
 @pytest.fixture
-def flag_types() -> collections.abc.Generator[types.ModuleType, None, None]:
-    yield from module('flag_types')
+def flag_types() -> types.ModuleType:
+    from .test_cli_modules.flag_types.flag_types import with_default as _, without_default as _
+    from .test_cli_modules.flag_types import flag_types
+
+    return flag_types
 
 
 @pytest.fixture
-def hidden_subcommand() -> collections.abc.Generator[types.ModuleType, None, None]:
-    yield from module('hidden_subcommand')
+def hidden_subcommand() -> types.ModuleType:
+    from .test_cli_modules.hidden_subcommand.hidden_subcommand import _should_not_show as _
+    from .test_cli_modules.hidden_subcommand import hidden_subcommand
+
+    return hidden_subcommand
 
 
 @pytest.fixture
-def no_submodules() -> collections.abc.Generator[types.ModuleType, None, None]:
-    yield from module('no_submodules')
+def no_submodules() -> types.ModuleType:
+    from .test_cli_modules.no_submodules import no_submodules
 
-
-def test_blank_parser_has_no_children(blank: types.ModuleType) -> None:
-    assert blank.entrypoint.cli._parser._subparsers is None
-
-
-def test_flag_types_parser_has_children(flag_types: types.ModuleType) -> None:
-    assert flag_types.entrypoint.cli._parser._subparsers is not None
-
-
-def test_flag_types_init_run_receives_correct_arguments(flag_types: types.ModuleType) -> None:
-    assert flag_types.entrypoint.cli.run(shlex.split('. 1')) == {'foo': 1}
-    assert flag_types.entrypoint.cli.run(shlex.split('. 2')) == {'foo': 2}
+    return no_submodules
 
 
 def test_flag_types_with_default_receive_correct_arguments() -> None:
@@ -103,12 +102,12 @@ def test_flag_types_without_default_receive_correct_arguments() -> None:
 
 
 def test_dash_help_does_not_show_hidden_subcommand(hidden_subcommand: types.ModuleType) -> None:
-    assert '_should_not_show' not in hidden_subcommand.entrypoint.cli._parser.format_help()
+    assert '_should_not_show' not in atools.CLI(hidden_subcommand.__name__).parser.format_help()
 
 
 def test_execute_hidden_subcommand_works(hidden_subcommand: types.ModuleType) -> None:
-    assert hidden_subcommand.entrypoint.cli.run(shlex.split(
-        f'_should_not_show hidden_subcommand_works'
+    assert atools.CLI(hidden_subcommand.__name__).run(shlex.split(
+        f'_should_not_show entrypoint hidden_subcommand_works'
     )) == {
         'foo': 'hidden_subcommand_works',
     }
@@ -124,7 +123,7 @@ def test_async_entrypoint_works() -> None:
 
 
 def test_no_submodules_does_not_include_submodules(no_submodules: types.ModuleType) -> None:
-    assert 'should_not_be_included' not in no_submodules.entrypoint.cli._parser.format_help()
+    assert 'should_not_be_included' not in atools.CLI(no_submodules.__name__).parser.format_help()
 
 
 def test_parses_bool_parameter() -> None:
@@ -247,7 +246,7 @@ def test_parses_list_parameter() -> None:
     assert entrypoint.cli.run(shlex.split(
         '\'[1, 2, 3, 4]\''
     )) == {
-        'foo': [1, 2, 3, 4]
+        'foo': [1, 2, 3, 4],
     } != {
         'foo': (1, 2, 3, 4)
     }
@@ -283,6 +282,20 @@ def test_parses_tuple_with_variable_length_parameter() -> None:
     assert entrypoint.cli.run(shlex.split('\'(\"hi!\", 1, 2, 3, 4)\'')) == {'foo': ('hi!', 1, 2, 3, 4)}
 
 
+def test_parses_enum_type_parameter() -> None:
+
+    class Foo(enum.Enum):
+        a = 1
+        b = 2
+        c = 3
+
+    @atools.CLI()
+    def entrypoint(foo: Foo) -> dict[str, Foo]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('1')) == {'foo': Foo.a}
+
+
 def test_parses_custom_primitive_type_parameter() -> None:
 
     class Foo(str):
@@ -294,13 +307,7 @@ def test_parses_custom_primitive_type_parameter() -> None:
     def entrypoint(foo: Foo) -> dict[str, Foo]:
         return locals()
 
-    assert entrypoint.cli.run(shlex.split(
-        '\\\'haha\\\''
-    )) == {
-        'foo': Foo('haha')
-    } != {
-        'foo': 'haha'
-    }
+    assert entrypoint.cli.run(shlex.split('\\\'haha\\\'')) == {'foo': Foo('haha')} != {'foo': 'haha'}
 
 
 def test_parses_custom_container_type_parameter() -> None:
@@ -318,7 +325,7 @@ def test_parses_custom_container_type_parameter() -> None:
     )) == {
         'foo': Foo((False, 3.14, 42, 'hi!', 'bye!')),
     } != {
-        'foo': tuple((False, 3.14, 42, 'hi!', 'bye!')),
+        'foo': tuple((False, 3.14, 42, 'hi!', 'bye!'))
     }
 
 
@@ -335,11 +342,11 @@ def test_parses_annotated_int() -> None:
 def test_dash_help_prints_parameter_annotation() -> None:
     @atools.CLI()
     def entrypoint(
-        foo: typing.Annotated[int, 'This is my annotation.']
+        foo: typing.Annotated[int, 'This is my comment.']
     ) -> dict[str, int]:
         """"""
 
-    assert 'This is my annotation.' in entrypoint.cli._parser.format_help()
+    assert 'This is my comment.' in entrypoint.cli.parser.format_help()
 
 
 def test_positional_only_without_default_works() -> None:
@@ -415,28 +422,76 @@ def test_keyword_only_with_default_works() -> None:
     assert entrypoint.cli.run(shlex.split('--foo 42')) == {'foo': 42}
 
 
-def test_var_positional_works() -> None:
-    ...
+def test_var_positional_does_not_work() -> None:
+    @atools.CLI()
+    def entrypoint(*foo: int) -> dict[str, tuple[int, ...]]: ...
+
+    with pytest.raises(RuntimeError):
+        getattr(entrypoint.cli, 'parser')
 
 
-def test_var_keyword_works() -> None:
-    ...
+def test_var_keyword_does_not_work() -> None:
+    @atools.CLI()
+    def entrypoint(**foo: int) -> dict[str, dict[str, int]]: ...
+
+    with pytest.raises(RuntimeError):
+        getattr(entrypoint.cli, 'parser')
 
 
 def test_dash_help_prints_entrypoint_doc() -> None:
     @atools.CLI()
     def entrypoint(
-        foo: typing.Annotated[int, 'This is my annotation.']
+        foo: int,
     ) -> dict[str, int]:
         """What's up, Doc?"""
 
-    assert """What's up, Doc?""" in entrypoint.cli._parser.format_help()
+    assert """What's up, Doc?""" in entrypoint.cli.parser.format_help()
 
 
-def test_annotated_count_action() -> None:
+def test_annotation_log_level_of_logger_sets_choices() -> None:
+    logger = logging.getLogger('test_annotated_of_logger_sets_choices')
+
     @atools.CLI()
     def entrypoint(
-        foo: typing.Annotated[int, atools.CLI.Metadata[int](name_or_flags=['-f', '--foo'], action='count')] = 0,
+        foo: typing.Annotated[
+            atools.CLI.LogLevelLiteral,
+            atools.CLI.Annotation[atools.CLI.LogLevelLiteral].log_level_with_logger(logger),
+        ] = 'DEBUG'
+    ) -> dict[str, pydantic.PositiveInt]: ...
+
+    for choice in logging.getLevelNamesMapping().keys():
+        assert choice in entrypoint.cli.parser.format_help()
+
+
+def test_annotation_log_level_of_logger_sets_log_level() -> None:
+    logger = logging.getLogger('test_annotation_log_level_of_logger_sets_log_level')
+    logger.setLevel(logging.ERROR)
+
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[
+            atools.CLI.LogLevelLiteral,
+            atools.CLI.Annotation[atools.CLI.LogLevelLiteral].log_level_with_logger(logger),
+        ] = 'DEBUG'
+    ) -> dict[str, atools.CLI.LogLevelLiteral]:
+        return locals()
+
+    assert logger.level == logging.ERROR
+
+    assert entrypoint.cli.run(shlex.split('--foo INFO')) == {'foo': 'INFO'}
+    assert logger.level == logging.INFO
+
+    assert entrypoint.cli.run(shlex.split('')) == {'foo': 'DEBUG'}
+    assert logger.level == logging.DEBUG
+
+
+def test_annotation_with_count_action_counts() -> None:
+    @atools.CLI()
+    def entrypoint(
+        foo: typing.Annotated[
+            pydantic.NonNegativeInt,
+            atools.CLI.Annotation[pydantic.NonNegativeInt](name_or_flags=['-f', '--foo'], action='count'),
+        ] = 0,
     ) -> dict[str, int]:
         return locals()
 

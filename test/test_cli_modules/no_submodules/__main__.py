@@ -1,7 +1,10 @@
 #!/usr/bin/env python
 
-from no_submodules import entrypoint
+import importlib
+
+import atools
 
 
 if __name__ == '__main__':
-    entrypoint.cli.run()
+    importlib.import_module('no_submodules')
+    atools.CLI(__name__).run()

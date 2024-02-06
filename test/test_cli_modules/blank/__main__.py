@@ -1,8 +1,11 @@
 #!/usr/bin/env python
 
-from blank import entrypoint
+import importlib
+
+import atools
 
 
 if __name__ == '__main__':
-    entrypoint.cli.run()
+    importlib.import_module('blank')
+    atools.CLI(__name__).run()
 

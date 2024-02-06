@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+import atools
+
+
+@atools.CLI()
 def entrypoint(
     positional_only: int,
     /,
