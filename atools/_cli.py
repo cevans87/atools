@@ -73,46 +73,41 @@ class _Decorated[** Params, Return](typing.Protocol):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class _Value[T]:
-    _container_types: typing.ClassVar[frozenset[type]] = frozenset({
+    _types: typing.ClassVar[frozenset[type]] = frozenset({
+        builtins.bool,
+        builtins.float,
+        builtins.int,
+        builtins.str,
+
         builtins.dict,
         builtins.frozenset,
         builtins.list,
         builtins.set,
         builtins.tuple,
     })
-    _primitive_types: typing.ClassVar[frozenset[type]] = frozenset({
-        builtins.bool,
-        builtins.float,
-        builtins.int,
-        builtins.str,
-    })
-    _types: typing.ClassVar[frozenset[type]] = _container_types | _primitive_types
 
     @classmethod
     def _of_arg[T](cls, arg: object, t: type[T]) -> T:
-        match type(arg), typing.get_origin(t) or t, typing.get_args(t):
+        arg_t = type(arg)
+        origin_t = typing.get_origin(t) or t
+        args_t = typing.get_args(t)
+
+        match arg_t, origin_t, args_t:
             # Primitive types.
-            case builtins.bool, builtins.bool, ():
-                arg: bool
-                value: T = arg
-            case builtins.float, builtins.float, ():
-                arg: float
-                value: T = arg
-            case builtins.int, builtins.int, ():
-                arg: int
-                value: T = arg
-            case builtins.str, builtins.str, ():
-                arg: str
-                value: T = arg
-            # None and types.NoneType are used interchangeably in Python typing.
-            case (None | types.NoneType), (None | types.NoneType), ():
-                arg: None
+            case (
+                builtins.bool, builtins.bool, ()
+                | builtins.float, builtins.float, ()
+                | builtins.int, builtins.int, ()
+                | builtins.str, builtins.str, ()
+                # None and types.NoneType are not the same but are used interchangeably in Python typing.
+                | (None | types.NoneType), (None | types.NoneType), ()
+            ):
                 value: T = arg
 
             # Union type.
-            # types.UnionType and typing.Union are not equivalent. If that changes, we can use just types.UnionType.
+            # types.UnionType and typing.Union are not equivalent. If that changes, just use types.UnionType.
             #  ref. https://github.com/python/cpython/issues/105499.
-            case Arg, (types.UnionType | typing.Union), Args if Arg in Args:
+            case arg_t, (types.UnionType | typing.Union), _ if arg_t in args_t:
                 arg: Arg
                 value: T = arg
 
@@ -120,34 +115,35 @@ class _Value[T]:
             case builtins.dict, builtins.dict, (Key, Value):
                 arg: dict
                 value: T = {cls._of_arg(key, Key): cls._of_arg(value, Value) for key, value in arg.items()}
-            case builtins.set, builtins.frozenset, (Value,):
-                arg: set
-                value: T = frozenset({cls._of_arg(sub_arg, Value) for sub_arg in arg})
-            case builtins.list, builtins.list, (Value,):
-                arg: list
-                value: T = [cls._of_arg(value, Value) for value in arg]
-            case builtins.set, builtins.set, (Value,):
-                arg: set
-                value: T = {cls._of_arg(sub_arg, Value) for sub_arg in arg}
-            case builtins.tuple, builtins.tuple, (Key, builtins.Ellipsis):
+
+            # TODO: find the rest of the bugs.
+            case (
+                (builtins.set, builtins.frozenset), _
+                | (builtins.list, builtins.list)
+                | (builtins.set, builtins.set)
+            ), (Value,):
+                arg: typing.Iterable[Value]
+                value: T = t([cls._of_arg(value, Value) for value in arg])
+            case (builtins.tuple, builtins.tuple), (Key, builtins.Ellipsis):
                 arg: tuple
-                value: T = tuple([cls._of_arg(sub_arg, Key) for sub_arg in arg])
-            case builtins.tuple, builtins.tuple, (Arg, *Args):
+                value: T = t([cls._of_arg(sub_arg, Key) for sub_arg in arg])
+            case (builtins.tuple, builtins.tuple), (Arg, *Args):
                 arg: tuple
-                value: T = tuple([cls._of_arg(arg[0], Arg), *cls._of_arg(arg[1:], tuple[*Args])])
-            case builtins.tuple, builtins.tuple, ():
+                value: T = t([cls._of_arg(arg[0], Arg), *cls._of_arg(arg[1:], tuple[*Args])])
+            case (builtins.tuple, builtins.tuple), ():
                 arg: tuple[()]
-                value: T = tuple()
+                value: T = t()
 
             # Custom types.
-            case Arg, Origin, () if Origin not in cls._types:
+            case _, _, () if origin_t not in cls._types:
                 arg: Arg
-                value: T = Origin(arg)
-            case Arg, Origin, Args if Origin not in cls._types:
-                arg: Arg
-                value: T = Origin[*Args](arg)
+                value: T = origin_t(arg)
+            case _, _, _ if origin_t not in cls._types:
+                arg: arg_t
+                value: T = origin_t[*args_t](arg)
             case _:
                 raise RuntimeError(f'Given {t=} could not be enforced on {arg=}.')
+
 
         return value
 
