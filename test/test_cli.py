@@ -22,32 +22,26 @@ def module(name: str) -> collections.abc.Generator[types.ModuleType, None, None]
 
 @pytest.fixture
 def blank() -> types.ModuleType:
-    from .test_cli_modules.blank import blank
-
-    return blank
+    return importlib.import_module('.test_cli_modules.blank.blank', package=__package__)
 
 
 @pytest.fixture
 def flag_types() -> types.ModuleType:
-    from .test_cli_modules.flag_types.flag_types import with_default as _, without_default as _
-    from .test_cli_modules.flag_types import flag_types
-
-    return flag_types
+    importlib.import_module('.test_cli_modules.flag_types.flag_types.with_default', package=__package__)
+    return importlib.import_module('.test_cli_modules.flag_types.flag_types', package=__package__)
 
 
 @pytest.fixture
 def hidden_subcommand() -> types.ModuleType:
-    from .test_cli_modules.hidden_subcommand.hidden_subcommand import _should_not_show as _
-    from .test_cli_modules.hidden_subcommand import hidden_subcommand
-
-    return hidden_subcommand
+    importlib.import_module(
+        '.test_cli_modules.hidden_subcommand.hidden_subcommand._should_not_show', package=__package__
+    )
+    return importlib.import_module('.test_cli_modules.hidden_subcommand.hidden_subcommand', package=__package__)
 
 
 @pytest.fixture
 def no_submodules() -> types.ModuleType:
-    from .test_cli_modules.no_submodules import no_submodules
-
-    return no_submodules
+    return importlib.import_module('.test_cli_modules.no_submodules.no_submodules', package=__package__)
 
 
 def test_flag_types_with_default_receive_correct_arguments() -> None:
@@ -500,3 +494,18 @@ def test_annotation_with_count_action_counts() -> None:
     assert entrypoint.cli.run(shlex.split('--foo --foo')) == {'foo': 2}
     assert entrypoint.cli.run(shlex.split('-f --foo')) == {'foo': 2}
     assert entrypoint.cli.run(shlex.split('-ff')) == {'foo': 2}
+
+
+def test_cli_names_enforce_subcommand_structure() -> None:
+
+    for name in ['foo.baz', 'foo.qux', 'bar.quux', 'bar.corge']:
+        @atools.CLI(name)
+        def entrypoint(foo: int) -> dict[str, object]:
+            return locals()
+
+    assert 'foo' in atools.CLI().parser.format_help()
+    assert 'bar' in atools.CLI().parser.format_help()
+    assert 'baz' in atools.CLI('foo').parser.format_help()
+    assert 'qux' in atools.CLI('foo').parser.format_help()
+    assert 'quux' in atools.CLI('bar').parser.format_help()
+    assert 'corge' in atools.CLI('bar').parser.format_help()

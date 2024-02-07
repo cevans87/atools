@@ -3,7 +3,7 @@
 import atools
 
 
-@atools.CLI()
+@atools.CLI(__name__)
 def entrypoint(
     positional_only: int,
     /,
@@ -12,3 +12,7 @@ def entrypoint(
     keyword_only: int
 ) -> dict[str, int]:
     return locals()
+
+
+if __name__ == '__main__':
+    atools.CLI(__name__).run()

@@ -51,11 +51,15 @@ import dataclasses
 import enum
 import inspect
 import logging
+import re
 import types
 import typing
 import sys
 
 import pydantic
+
+
+type _Name = str
 
 
 class _Entrypoint[** Params, Return](typing.Protocol):
@@ -65,68 +69,6 @@ class _Entrypoint[** Params, Return](typing.Protocol):
 class _Decorated[** Params, Return](typing.Protocol):
     __call__: typing.Callable[Params, Return]
     cli: _Decoration[Params, Return]
-
-
-type _Name = str
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class _Decoration[** Params, Return]:
-    """CLI decoration attached to decorated entrypoint at `<entrypoint>.cli`.
-
-    A _Decoration instance is attached to an entrypoint decorated via _Decorator.__call__. The `run` function can then
-    be called with `<entrypoint>.cli.run`.
-    """
-    _decorated: _Decorated[Params, Return]
-
-    @property
-    def parser(self) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(description=self._decorated.__doc__)
-
-        for parameter in inspect.signature(self._decorated).parameters.values():
-            add_argument_params = dict(
-                filter(
-                    lambda item: item[1] is not ...,
-                    dataclasses.asdict(_Annotation().of_parameter(parameter)).items()
-                )
-            )
-            parser.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
-
-        return parser
-
-    def run(self, args: typing.Sequence[str] = ...) -> object:
-        """Parses args, runs parser's registered entrypoint with parsed args, and return the result.
-
-        Note that the entrypoint that is run is determined by the parser. It may be an entrypoint in a submodule of the
-        decorated entrypoint, not the decorated entrypoint.
-        
-        If the decorated function is a couroutinefunction, it will be run via `asyncio.run`.
-
-        Args (Positional or Keyword):
-            args (default: sys.argv[1]): Arguments to be parsed and passed to parser's registered entrypoint.
-
-        Returns:
-            object: Result of executing registered entrypoint with given args.
-        """
-        args = sys.argv[1:] if args is ... else args
-
-        parsed_args = vars(self.parser.parse_args(args))
-
-        # Note that this may be the registered entrypoint of a submodule, not the entrypoint that is decorated.
-        args, kwargs = [], {}
-        for parameter in inspect.signature(self._decorated).parameters.values():
-            if parameter.kind == parameter.POSITIONAL_ONLY:
-                args.append(parsed_args[parameter.name])
-            elif parameter.kind == parameter.VAR_POSITIONAL:
-                args += parsed_args[parameter.name]
-            else:
-                kwargs[parameter.name] = parsed_args[parameter.name]
-
-        result = self._decorated(*args, **kwargs)
-        if inspect.iscoroutinefunction(self._decorated):
-            result = asyncio.run(result)
-
-        return result
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -231,7 +173,7 @@ class _Annotation[T]:
         'help',
         'version',
     ] | typing.Type[argparse.Action] = ...
-    choices: typing.Container[T] = ...
+    choices: typing.Sequence[T] = ...
     const: T = ...
     default: T = ...
     dest: str = ...
@@ -251,12 +193,15 @@ class _Annotation[T]:
 
     @staticmethod
     def of_parameter(parameter: inspect.Parameter, /) -> _Annotation[T]:
+        if isinstance(parameter.annotation, str):
+            raise RuntimeError(f'Unsupported stringified {parameter.annotation=!r}.')
+
         if parameter.kind not in {
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             inspect.Parameter.KEYWORD_ONLY,
         }:
-            raise RuntimeError(f'Unsupported {parameter.kind=!r}.')
+            raise RuntimeError(f'Cannot {parameter.kind=!r}.')
 
         annotation = _Annotation()
 
@@ -295,19 +240,26 @@ class _Annotation[T]:
 
         # No automatic actions needed for 'const'.
 
-        if (annotation.default is ...) and (parameter.default != parameter.empty):
-            annotation = dataclasses.replace(annotation, default=parameter.default)
+        if annotation.default is ...:
+            if parameter.default != parameter.empty:
+                annotation = dataclasses.replace(annotation, default=parameter.default)
 
         if annotation.help is ...:
+            if annotation.choices is not ...:
+                help_parts += [f'{{{','.join(filter(lambda choice: not choice.startswith('_'), annotation.choices))}}}']
             if annotation.default is not ...:
                 help_parts += [f'Default:', str(annotation.default)]
             annotation = dataclasses.replace(annotation, help=' '.join(help_parts))
 
         # No automatic actions needed for 'metavar'.
+        if annotation.metavar is ...:
+            match annotation.choices:
+                case (*choices,):
+                    annotation = dataclasses.replace(annotation, metavar=parameter.name)
 
-        if annotation.nargs is ... and annotation.action is ...:
-            match parameter.kind, t, parameter.default == parameter.empty:
-                case (parameter.POSITIONAL_ONLY | parameter.POSITIONAL_OR_KEYWORD), _, False:
+        if annotation.nargs is ...:
+            match annotation.action, parameter.kind, t, parameter.default == parameter.empty:
+                case builtins.Ellipsis, (parameter.POSITIONAL_ONLY | parameter.POSITIONAL_OR_KEYWORD), _, False:
                     annotation = dataclasses.replace(annotation, nargs='?')
 
         if annotation.required is ...:
@@ -315,8 +267,12 @@ class _Annotation[T]:
                 case parameter.KEYWORD_ONLY, True:
                     annotation = dataclasses.replace(annotation, required=True)
 
-        if (annotation.type is ...) and (annotation.action not in {'count', 'store_false', 'store_true'}):
-            annotation = dataclasses.replace(annotation, type=lambda arg: _Value.of_arg(arg=arg, t=t))
+        if annotation.type is ...:
+            match annotation.action:
+                case 'count' | 'store_false' | 'store_true':
+                    pass
+                case _:
+                    annotation = dataclasses.replace(annotation, type=lambda arg: _Value.of_arg(arg=arg, t=t))
 
         return annotation
 
@@ -326,6 +282,72 @@ class _Annotation[T]:
             choices=typing.get_args(_LogLevelLiteral),
             type=lambda arg: logger.setLevel(value := _Value.of_arg(arg=arg, t=str)) or value
         )
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _Decoration[** Params, Return]:
+    """CLI decoration attached to decorated entrypoint at `<entrypoint>.cli`.
+
+    A _Decoration instance is attached to an entrypoint decorated via _Decorator.__call__. The `run` function can then
+    be called with `<entrypoint>.cli.run`.
+    """
+    decorated: _Decorated[Params, Return]
+
+    @property
+    def name(self) -> _Name:
+        return '.'.join(filter(
+            lambda name_part: re.match(r'<.+>', name_part) is None,
+            [*self.decorated.__name__.split('.'), *self.decorated.__qualname__.split('.')]
+        ))
+
+    @property
+    def parser(self) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(description=self.decorated.__doc__)
+
+        for parameter in inspect.signature(self.decorated).parameters.values():
+            add_argument_params = dict(
+                filter(
+                    lambda item: item[1] is not ...,
+                    dataclasses.asdict(_Annotation().of_parameter(parameter)).items()
+                )
+            )
+            parser.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
+
+        return parser
+
+    def run(self, args: typing.Sequence[str] = ...) -> object:
+        """Parses args, runs parser's registered entrypoint with parsed args, and return the result.
+
+        Note that the entrypoint that is run is determined by the parser. It may be an entrypoint in a submodule of the
+        decorated entrypoint, not the decorated entrypoint.
+
+        If the decorated function is a couroutinefunction, it will be run via `asyncio.run`.
+
+        Args (Positional or Keyword):
+            args (default: sys.argv[1]): Arguments to be parsed and passed to parser's registered entrypoint.
+
+        Returns:
+            object: Result of executing registered entrypoint with given args.
+        """
+        args = sys.argv[1:] if args is ... else args
+
+        parsed_args = vars(self.parser.parse_args(args))
+
+        # Note that this may be the registered entrypoint of a submodule, not the entrypoint that is decorated.
+        args, kwargs = [], {}
+        for parameter in inspect.signature(self.decorated).parameters.values():
+            if parameter.kind == parameter.POSITIONAL_ONLY:
+                args.append(parsed_args[parameter.name])
+            elif parameter.kind == parameter.VAR_POSITIONAL:
+                args += parsed_args[parameter.name]
+            else:
+                kwargs[parameter.name] = parsed_args[parameter.name]
+
+        result = self.decorated(*args, **kwargs)
+        if inspect.iscoroutinefunction(self.decorated):
+            result = asyncio.run(result)
+
+        return result
 
 
 @dataclasses.dataclass(frozen=True)
@@ -373,62 +395,78 @@ class _Decorator[** Params, Return]:
     """
     name: _Name = ...
 
-    _registry: typing.ClassVar[dict[_Name | _Decorated]] = {}
+    _registry: typing.ClassVar[dict[_Name, _Decoration | set[str]]] = {}
 
     Annotation: typing.ClassVar[type[_Annotation]] = _Annotation
     LogLevelLiteral: typing.ClassVar[type[_LogLevelLiteral]] = _LogLevelLiteral
     Name: typing.ClassVar[type[_Name]] = _Name
 
     def __call__(self, entrypoint: _Entrypoint[Params, Return], /) -> _Decorated[Params, Return]:
-        name = self.name if self.name is not ... else '.'.join([entrypoint.__module__, entrypoint.__qualname__])
-
         decorated: _Decorated[Params, Return] = entrypoint  # type: ignore
-        entrypoint.cli = _Decoration[Params, Return](_decorated=decorated)
+        decoration = _Decoration[Params, Return](decorated=decorated)
+        decorated.cli = decoration
+
+        name = self.name if self.name is not ... else '.'.join([entrypoint.__module__, entrypoint.__qualname__])
 
         current_name_parts = []
         remainder_name_parts = list(
-            filter(lambda name_part: name_part not in {'__main__', '<lambda>', '<locals>'}, name.split('.'))
+            filter(lambda name_part: name_part not in {'<lambda>', '<locals>'}, name.split('.'))
         )
 
         # Create all the registry links that lead up to the decorated entrypoint, and then the decorated entrypoint.
         while remainder_name_parts:
             self._registry.setdefault('.'.join(current_name_parts), set()).add(remainder_name_parts[0])
             current_name_parts.append(remainder_name_parts.pop(0))
-        self._registry['.'.join(current_name_parts)] = decorated
+        self._registry['.'.join(current_name_parts)] = decoration
 
         return decorated
 
     @property
-    def decorated(self) -> _Decorated | None:
-        return self._registry.get(self.name)
+    def decoration(self) -> _Decoration[Params, Return]:
+        name = '' if self.name is ... else self.name
+
+        if isinstance((value := self._registry.get(name)), _Decoration):
+            decoration = value
+        elif value is None:
+            def decorated() -> None: ...
+            decoration = _Decoration(decorated=decorated)
+            decorated.cli = decoration
+        else:
+            value: set[str]
+
+            # Using the local `value` in function signature type annotation converts the entire token to a string
+            #  without evaluating it. Rather than let that happen, force evaluation and set the annotation manually.
+            #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
+            def decorated(subcommand) -> None:  # pragma: no cover
+                raise RuntimeError('This entrypoint should never execute.')
+            decorated.__annotations__['subcommand'] = typing.Annotated[
+                str, _Annotation[str](choices=tuple[str](sorted(value)), metavar='subcommand')
+            ]
+
+            decoration = _Decoration[Params, Return](decorated=decorated)
+            decorated.cli = decoration
+
+        return decoration
 
     @property
-    def parser(self) -> argparse.ArgumentParser | None:
-        name = '' if self.name is ... else self.name
-        if (value := self._registry.get(name)) is None:
-            parser = None
-        elif (decorated := getattr(value, 'cli', None)) is not None:
-            parser = decorated.parser
-        else:
-            parser = argparse.ArgumentParser()
-            parser.add_argument(
-                'subcommand',
-                choices=(name_part for name_part in sorted(value)),
-                # FIXME Metavar standardized form for subcommands?
-                metavar=f'{{{'|'.join(sorted(filter(lambda name_part: not name_part.startswith('_'), value)))}}}'
-            )
+    def name_parts(self) -> tuple[str, ...]:
+        return () if self.name is ... else tuple(filter(
+            lambda name_part: re.match(r'<.+>', name_part) is None, self.name.split('.')
+        ))
 
-        return parser
+    @property
+    def parser(self) -> argparse.ArgumentParser:
+        return self.decoration.parser
 
     def run(self, args: typing.Sequence[str] = ...) -> object:
         args = sys.argv[1:] if args is ... else args
 
-        name_parts = [] if self.name is ... else self.name.split('.')
+        name_parts = list(self.name_parts)
         while args and ('.'.join([*name_parts, args[0]]) in self._registry):
             name_parts.append(args.pop(0))
         name = '.'.join(name_parts)
 
-        return _Decorator(name).decorated.cli.run(args)
+        return _Decorator(name).decoration.run(args)
 
 
 CLI = _Decorator
