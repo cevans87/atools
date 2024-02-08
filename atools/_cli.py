@@ -124,15 +124,15 @@ class _Value[T]:
                 | (builtins.tuple, (builtins.tuple, (Value, builtins.Ellipsis)))
             ):
                 arg: typing.Iterable[Value]
-                value: T = t([cls._of_arg(value, Value) for value in arg])
+                value: T = t[0]([cls._of_arg(value, Value) for value in arg])
 
             # Tuples require evaluation of each arg until none are left.
             case builtins.tuple, (builtins.tuple, (Arg, *Args)):
                 arg: tuple
-                value: T = t([cls._of_arg(arg[0], Arg), *cls._of_arg(arg[1:], tuple[*Args])])
+                value: T = tuple([cls._of_arg(arg[0], Arg), *cls._of_arg(arg[1:], tuple[*Args])])
             case builtins.tuple, (builtins.tuple, ()):
                 arg: tuple[()]
-                value: T = t()
+                value: T = tuple()
 
             # Custom type.
             case _ if origin_t not in cls._types:
