@@ -88,62 +88,104 @@ class _Value[T]:
 
     @classmethod
     def _of_arg[T](cls, arg: object, t: type[T]) -> T:
-        arg_t = type(arg)
         origin_t = typing.get_origin(t) or t
-        args_t = typing.get_args(t)
 
-        match arg_t, origin_t, args_t:
+        if (origin := typing.get_origin(t)) is not None:
+            args = typing.get_args(t)
+            t = (origin, args)
+
+        match type(arg), t:
             # Primitive types.
             case (
-                builtins.bool, builtins.bool, ()
-                | builtins.float, builtins.float, ()
-                | builtins.int, builtins.int, ()
-                | builtins.str, builtins.str, ()
+                (builtins.bool, builtins.bool)
+                | (builtins.float, builtins.float)
+                | (builtins.int, builtins.int)
+                | (builtins.str, builtins.str)
                 # None and types.NoneType are not the same but are used interchangeably in Python typing.
-                | (None | types.NoneType), (None | types.NoneType), ()
+                | (types.NoneType, (None | types.NoneType))
             ):
                 value: T = arg
 
             # Union type.
             # types.UnionType and typing.Union are not equivalent. If that changes, just use types.UnionType.
             #  ref. https://github.com/python/cpython/issues/105499.
-            case arg_t, (types.UnionType | typing.Union), _ if arg_t in args_t:
+            case Arg, ((types.UnionType | typing.Union), Args) if Arg in Args:
                 arg: Arg
                 value: T = arg
 
             # Container types.
-            case builtins.dict, builtins.dict, (Key, Value):
+            case builtins.dict, (builtins.dict, (Key, Value)):
                 arg: dict
                 value: T = {cls._of_arg(key, Key): cls._of_arg(value, Value) for key, value in arg.items()}
-
-            # TODO: find the rest of the bugs.
             case (
-                (builtins.set, builtins.frozenset), _
-                | (builtins.list, builtins.list)
-                | (builtins.set, builtins.set)
-            ), (Value,):
+                (builtins.set, (builtins.frozenset, (Value,)))
+                | (builtins.list, (builtins.list, (Value,)))
+                | (builtins.set, (builtins.set, (Value,)))
+                | (builtins.tuple, (builtins.tuple, (Value, builtins.Ellipsis)))
+            ):
                 arg: typing.Iterable[Value]
                 value: T = t([cls._of_arg(value, Value) for value in arg])
-            case (builtins.tuple, builtins.tuple), (Key, builtins.Ellipsis):
-                arg: tuple
-                value: T = t([cls._of_arg(sub_arg, Key) for sub_arg in arg])
-            case (builtins.tuple, builtins.tuple), (Arg, *Args):
+
+            # Tuples require evaluation of each arg until none are left.
+            case builtins.tuple, (builtins.tuple, (Arg, *Args)):
                 arg: tuple
                 value: T = t([cls._of_arg(arg[0], Arg), *cls._of_arg(arg[1:], tuple[*Args])])
-            case (builtins.tuple, builtins.tuple), ():
+            case builtins.tuple, (builtins.tuple, ()):
                 arg: tuple[()]
                 value: T = t()
 
-            # Custom types.
-            case _, _, () if origin_t not in cls._types:
-                arg: Arg
+            # Custom type.
+            case _ if origin_t not in cls._types:
+                arg: type(arg)
                 value: T = origin_t(arg)
-            case _, _, _ if origin_t not in cls._types:
-                arg: arg_t
-                value: T = origin_t[*args_t](arg)
             case _:
-                raise RuntimeError(f'Given {t=} could not be enforced on {arg=}.')
+                raise RuntimeError(f'Given {t=!r} could not be enforced on {arg=!r}.')
+        #match arg, origin_t, args_t:
+        #    # Primitive types.
+        #    case (
+        #        (bool(_), builtins.bool, ())
+        #        | (float(_), builtins.float, ())
+        #        | (int(_), builtins.int, ())
+        #        | (str(_), builtins.str, ())
+        #        # None and types.NoneType are not the same but are used interchangeably in Python typing.
+        #        | (None, (None | types.NoneType), ())
+        #    ):
+        #        value: T = arg
 
+        #    # Union type.
+        #    # types.UnionType and typing.Union are not equivalent. If that changes, just use types.UnionType.
+        #    #  ref. https://github.com/python/cpython/issues/105499.
+        #    case _, (types.UnionType | typing.Union), _ if type(arg) in args_t:
+        #        arg: type(arg)
+        #        value: T = arg
+
+        #    # Container types.
+        #    case dict(_), builtins.dict, (Key, Value):
+        #        arg: dict
+        #        value: T = {cls._of_arg(key, Key): cls._of_arg(value, Value) for key, value in arg.items()}
+        #    case (
+        #        (set(_), builtins.frozenset, (Value,))
+        #        | (list(_), builtins.list, (Value,))
+        #        | (set(_), builtins.set, (Value,))
+        #        | (tuple(_), builtins.tuple, (Value, builtins.Ellipsis))
+        #    ):
+        #        arg: typing.Iterable[Value]
+        #        value: T = t([cls._of_arg(value, Value) for value in arg])
+
+        #    # Tuples require evaluation of each arg until none are left.
+        #    case tuple(_), builtins.tuple, (Arg, *Args):
+        #        arg: tuple
+        #        value: T = t([cls._of_arg(arg[0], Arg), *cls._of_arg(arg[1:], tuple[*Args])])
+        #    case tuple(), builtins.tuple, ():
+        #        arg: tuple[()]
+        #        value: T = t()
+
+        #    # Custom type.
+        #    case _, _, _ if origin_t not in cls._types:
+        #        arg: arg_t
+        #        value: T = origin_t(arg)
+        #    case _:
+        #        raise RuntimeError(f'Given {t=!r} could not be enforced on {arg=!r}.')
 
         return value
 
@@ -169,7 +211,7 @@ class _Annotation[T]:
         'help',
         'version',
     ] | typing.Type[argparse.Action] = ...
-    choices: typing.Sequence[T] = ...
+    choices: typing.Iterable[T] = ...
     const: T = ...
     default: T = ...
     dest: str = ...
@@ -212,14 +254,8 @@ class _Annotation[T]:
                     **dict(filter(lambda item: item[1] is not ..., dataclasses.asdict(override_add_arguments).items()))
                 )
 
-        # Given type may be something like `typing.Annotated[pydantic.PositiveInt, ...]`. We need to keep digging into
-        # the origin until we find the non-annotated type.
-        # FIXME this should probably be while origin is not None. It's not only Annotated that'll cause this problem.
-        while typing.get_origin(t) is typing.Annotated:
-            t, _ = typing.get_args(t)
-
         if annotation.name_or_flags is ...:
-            match (parameter.kind, parameter.default == parameter.empty):
+            match parameter.kind, parameter.default == parameter.empty:
                 case (parameter.POSITIONAL_ONLY, _) | (parameter.POSITIONAL_OR_KEYWORD, True):
                     annotation = dataclasses.replace(annotation, name_or_flags=[parameter.name])
                 case (parameter.KEYWORD_ONLY, _) | (parameter.POSITIONAL_OR_KEYWORD, False):
@@ -247,28 +283,25 @@ class _Annotation[T]:
                 help_parts += [f'Default:', str(annotation.default)]
             annotation = dataclasses.replace(annotation, help=' '.join(help_parts))
 
-        # No automatic actions needed for 'metavar'.
         if annotation.metavar is ...:
-            match annotation.choices:
-                case (*choices,):
-                    annotation = dataclasses.replace(annotation, metavar=parameter.name)
+            if annotation.choices is not ...:
+                annotation = dataclasses.replace(annotation, metavar=parameter.name)
 
         if annotation.nargs is ...:
-            match annotation.action, parameter.kind, t, parameter.default == parameter.empty:
-                case builtins.Ellipsis, (parameter.POSITIONAL_ONLY | parameter.POSITIONAL_OR_KEYWORD), _, False:
-                    annotation = dataclasses.replace(annotation, nargs='?')
+            if (
+                (annotation.action is ...)
+                and (parameter.kind in {parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD})
+                and (parameter.default != parameter.empty)
+            ):
+                annotation = dataclasses.replace(annotation, nargs='?')
 
         if annotation.required is ...:
-            match parameter.kind, parameter.default == parameter.empty:
-                case parameter.KEYWORD_ONLY, True:
-                    annotation = dataclasses.replace(annotation, required=True)
+            if (parameter.kind == parameter.KEYWORD_ONLY) and (parameter.default == parameter.empty):
+                annotation = dataclasses.replace(annotation, required=True)
 
         if annotation.type is ...:
-            match annotation.action:
-                case 'count' | 'store_false' | 'store_true':
-                    pass
-                case _:
-                    annotation = dataclasses.replace(annotation, type=lambda arg: _Value.of_arg(arg=arg, t=t))
+            if annotation.action not in {'count', 'store_false', 'store_true'}:
+                annotation = dataclasses.replace(annotation, type=lambda arg: _Value.of_arg(arg=arg, t=t))
 
         return annotation
 
@@ -288,13 +321,7 @@ class _Decoration[** Params, Return]:
     be called with `<entrypoint>.cli.run`.
     """
     decorated: _Decorated[Params, Return]
-
-    @property
-    def name(self) -> _Name:
-        return '.'.join(filter(
-            lambda name_part: re.match(r'<.+>', name_part) is None,
-            [*self.decorated.__name__.split('.'), *self.decorated.__qualname__.split('.')]
-        ))
+    name: _Name
 
     @property
     def parser(self) -> argparse.ArgumentParser:
@@ -398,22 +425,17 @@ class _Decorator[** Params, Return]:
     Name: typing.ClassVar[type[_Name]] = _Name
 
     def __call__(self, entrypoint: _Entrypoint[Params, Return], /) -> _Decorated[Params, Return]:
-        decorated: _Decorated[Params, Return] = entrypoint  # type: ignore
-        decoration = _Decoration[Params, Return](decorated=decorated)
-        decorated.cli = decoration
-
         name = self.name if self.name is not ... else '.'.join([entrypoint.__module__, entrypoint.__qualname__])
+        name_parts = tuple(filter(lambda name_part: re.match(r'<.+>', name_part) is None, name.split('.')))
 
-        current_name_parts = []
-        remainder_name_parts = list(
-            filter(lambda name_part: name_part not in {'<lambda>', '<locals>'}, name.split('.'))
-        )
+        # Create all the registry links that lead up to the decorated entrypoint.
+        for i in range(len(name_parts)):
+            self._registry.setdefault('.'.join(name_parts[:i]), set()).add(name_parts[i])
+        name = '.'.join(name_parts)
 
-        # Create all the registry links that lead up to the decorated entrypoint, and then the decorated entrypoint.
-        while remainder_name_parts:
-            self._registry.setdefault('.'.join(current_name_parts), set()).add(remainder_name_parts[0])
-            current_name_parts.append(remainder_name_parts.pop(0))
-        self._registry['.'.join(current_name_parts)] = decoration
+        # Add the entrypoint decoration to the registry.
+        decorated: _Decorated[Params, Return] = entrypoint  # type: ignore
+        decorated.cli = self._registry[name] = _Decoration[Params, Return](decorated=entrypoint, name=name)
 
         return decorated
 
@@ -421,34 +443,31 @@ class _Decorator[** Params, Return]:
     def decoration(self) -> _Decoration[Params, Return]:
         name = '' if self.name is ... else self.name
 
-        if isinstance((value := self._registry.get(name)), _Decoration):
-            decoration = value
-        elif value is None:
-            def decorated() -> None: ...
-            decoration = _Decoration(decorated=decorated)
-            decorated.cli = decoration
-        else:
-            value: set[str]
+        match value := self._registry.get(name):
+            case _Decoration(decorated=_, name=_):
+                decoration = value
+            case None:
+                def decorated() -> None: ...
+                decoration = _Decoration(decorated=decorated, name=name)
+                decorated.cli = decoration
+            case set(_):
+                value: set[str]
 
-            # Using the local `value` in function signature type annotation converts the entire token to a string
-            #  without evaluating it. Rather than let that happen, force evaluation and set the annotation manually.
-            #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-            def decorated(subcommand) -> None:  # pragma: no cover
-                raise RuntimeError('This entrypoint should never execute.')
-            decorated.__annotations__['subcommand'] = typing.Annotated[
-                str, _Annotation[str](choices=tuple[str](sorted(value)), metavar='subcommand')
-            ]
+                # Using the local `value` in function signature type annotation converts the entire token to a string
+                #  without evaluating it. Rather than let that happen, force evaluation and set the annotation manually.
+                #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
+                def decorated(subcommand) -> None:  # pragma: no cover
+                    raise RuntimeError('This entrypoint should never execute.')
+                decorated.__annotations__['subcommand'] = typing.Annotated[
+                    str, _Annotation[str](choices=tuple[str](sorted(value)), metavar='subcommand')
+                ]
 
-            decoration = _Decoration[Params, Return](decorated=decorated)
-            decorated.cli = decoration
+                decoration = _Decoration[Params, Return](decorated=decorated, name=name)
+                decorated.cli = decoration
+            case _:  # pragma: no cover
+                raise RuntimeError(f'Registry has unhandled item ({name=!r}, {value=!r}).')
 
         return decoration
-
-    @property
-    def name_parts(self) -> tuple[str, ...]:
-        return () if self.name is ... else tuple(filter(
-            lambda name_part: re.match(r'<.+>', name_part) is None, self.name.split('.')
-        ))
 
     @property
     def parser(self) -> argparse.ArgumentParser:
@@ -457,7 +476,9 @@ class _Decorator[** Params, Return]:
     def run(self, args: typing.Sequence[str] = ...) -> object:
         args = sys.argv[1:] if args is ... else args
 
-        name_parts = list(self.name_parts)
+        name_parts = [] if self.name is ... else list(filter(
+            lambda name_part: re.match(r'<.+>', name_part) is None, self.name.split('.')
+        ))
         while args and ('.'.join([*name_parts, args[0]]) in self._registry):
             name_parts.append(args.pop(0))
         name = '.'.join(name_parts)

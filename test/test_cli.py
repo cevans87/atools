@@ -155,7 +155,15 @@ def test_parses_str_parameter() -> None:
 
 def test_parses_none_parameter() -> None:
     @atools.CLI()
-    def entrypoint(foo: None) -> dict[str, str]:
+    def entrypoint(foo: None) -> dict[str, None]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('None')) == {'foo': None}
+
+
+def test_parses_types_none_type_parameter() -> None:
+    @atools.CLI()
+    def entrypoint(foo: types.NoneType) -> dict[str, None]:
         return locals()
 
     assert entrypoint.cli.run(shlex.split('None')) == {'foo': None}
@@ -194,9 +202,9 @@ def test_parses_dict_parameter() -> None:
         return locals()
 
     assert entrypoint.cli.run(shlex.split('"{True: 2.0}"')) == {'foo': {True: 2.0}}
-    with (pytest.raises(RuntimeError)):
+    with pytest.raises(RuntimeError):
         entrypoint.cli.run(shlex.split('"{42: 2.0}"'))
-    with (pytest.raises(RuntimeError)):
+    with pytest.raises(RuntimeError):
         entrypoint.cli.run(shlex.split('"{True: \'the answer!\'}"'))
 
     @atools.CLI()
