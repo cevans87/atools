@@ -73,28 +73,24 @@ class _Decorated[** Params, Return](typing.Protocol):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class _Value[T]:
-    _types: typing.ClassVar[frozenset[type]] = frozenset({
+    _primitive_types: typing.ClassVar[frozenset[type]] = frozenset({
         builtins.bool,
         builtins.float,
         builtins.int,
         builtins.str,
-
+    })
+    _container_types: typing.ClassVar[frozenset[type]] = frozenset({
         builtins.dict,
         builtins.frozenset,
         builtins.list,
         builtins.set,
         builtins.tuple,
     })
+    _types: typing.ClassVar[frozenset[type]] = frozenset(_primitive_types | _container_types)
 
     @classmethod
     def _of_arg[T](cls, arg: object, t: type[T]) -> T:
-        origin_t = typing.get_origin(t) or t
-
-        if (origin := typing.get_origin(t)) is not None:
-            args = typing.get_args(t)
-            t = (origin, args)
-
-        match type(arg), t:
+        match type(arg), t if (origin := typing.get_origin(t)) is None else (origin, typing.get_args(t)):
             # Primitive types.
             case (
                 (builtins.bool, builtins.bool)
@@ -124,7 +120,7 @@ class _Value[T]:
                 | (builtins.tuple, (builtins.tuple, (Value, builtins.Ellipsis)))
             ):
                 arg: typing.Iterable[Value]
-                value: T = t[0]([cls._of_arg(value, Value) for value in arg])
+                value: T = t([cls._of_arg(value, Value) for value in arg])
 
             # Tuples require evaluation of each arg until none are left.
             case builtins.tuple, (builtins.tuple, (Arg, *Args)):
@@ -135,57 +131,14 @@ class _Value[T]:
                 value: T = tuple()
 
             # Custom type.
-            case _ if origin_t not in cls._types:
-                arg: type(arg)
-                value: T = origin_t(arg)
+            case Arg, (Origin, (_)) if Origin not in cls._types:
+                arg: Arg
+                value: T = Origin(arg)
+            case Arg, _ if origin is None and t not in cls._types:
+                arg: Arg
+                value: T = t(arg)
             case _:
                 raise RuntimeError(f'Given {t=!r} could not be enforced on {arg=!r}.')
-        #match arg, origin_t, args_t:
-        #    # Primitive types.
-        #    case (
-        #        (bool(_), builtins.bool, ())
-        #        | (float(_), builtins.float, ())
-        #        | (int(_), builtins.int, ())
-        #        | (str(_), builtins.str, ())
-        #        # None and types.NoneType are not the same but are used interchangeably in Python typing.
-        #        | (None, (None | types.NoneType), ())
-        #    ):
-        #        value: T = arg
-
-        #    # Union type.
-        #    # types.UnionType and typing.Union are not equivalent. If that changes, just use types.UnionType.
-        #    #  ref. https://github.com/python/cpython/issues/105499.
-        #    case _, (types.UnionType | typing.Union), _ if type(arg) in args_t:
-        #        arg: type(arg)
-        #        value: T = arg
-
-        #    # Container types.
-        #    case dict(_), builtins.dict, (Key, Value):
-        #        arg: dict
-        #        value: T = {cls._of_arg(key, Key): cls._of_arg(value, Value) for key, value in arg.items()}
-        #    case (
-        #        (set(_), builtins.frozenset, (Value,))
-        #        | (list(_), builtins.list, (Value,))
-        #        | (set(_), builtins.set, (Value,))
-        #        | (tuple(_), builtins.tuple, (Value, builtins.Ellipsis))
-        #    ):
-        #        arg: typing.Iterable[Value]
-        #        value: T = t([cls._of_arg(value, Value) for value in arg])
-
-        #    # Tuples require evaluation of each arg until none are left.
-        #    case tuple(_), builtins.tuple, (Arg, *Args):
-        #        arg: tuple
-        #        value: T = t([cls._of_arg(arg[0], Arg), *cls._of_arg(arg[1:], tuple[*Args])])
-        #    case tuple(), builtins.tuple, ():
-        #        arg: tuple[()]
-        #        value: T = t()
-
-        #    # Custom type.
-        #    case _, _, _ if origin_t not in cls._types:
-        #        arg: arg_t
-        #        value: T = origin_t(arg)
-        #    case _:
-        #        raise RuntimeError(f'Given {t=!r} could not be enforced on {arg=!r}.')
 
         return value
 
@@ -232,18 +185,24 @@ class _Annotation[T]:
     @staticmethod
     def of_parameter(parameter: inspect.Parameter, /) -> _Annotation[T]:
         if isinstance(parameter.annotation, str):
-            raise RuntimeError(f'Unsupported stringified {parameter.annotation=!r}.')
-
-        if parameter.kind not in {
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        }:
-            raise RuntimeError(f'Cannot {parameter.kind=!r}.')
+            raise RuntimeError(
+                f'{parameter.annotation=!r} is a str (e.g. not evaluated).'
+                f' See https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime.'
+            )
 
         annotation = _Annotation()
 
-        t = parameter.annotation
+        match parameter.kind:
+            case (
+                inspect.Parameter.KEYWORD_ONLY
+                | inspect.Parameter.POSITIONAL_ONLY
+                | inspect.Parameter.POSITIONAL_OR_KEYWORD
+                | inspect.Parameter.VAR_POSITIONAL
+            ):
+                t = parameter.annotation
+            case _:  # pragma: no cover
+                raise RuntimeError(f'{parameter.name=!r} has unsupported {parameter.kind=!r}.')
+
         help_parts = []
         if typing.get_origin(t) is typing.Annotated:
             t, *args = typing.get_args(t)
@@ -256,12 +215,24 @@ class _Annotation[T]:
 
         if annotation.name_or_flags is ...:
             match parameter.kind, parameter.default == parameter.empty:
-                case (parameter.POSITIONAL_ONLY, _) | (parameter.POSITIONAL_OR_KEYWORD, True):
+                case (
+                    (parameter.POSITIONAL_ONLY, _)
+                    | (parameter.VAR_POSITIONAL, True)
+                    | (parameter.POSITIONAL_OR_KEYWORD, True)
+                ):
                     annotation = dataclasses.replace(annotation, name_or_flags=[parameter.name])
-                case (parameter.KEYWORD_ONLY, _) | (parameter.POSITIONAL_OR_KEYWORD, False):
+                case (
+                    (parameter.KEYWORD_ONLY, _)
+                    | (parameter.POSITIONAL_OR_KEYWORD, False)
+                ):
                     annotation = dataclasses.replace(
                         annotation, name_or_flags=[f'--{parameter.name.replace('_', '-')}']
                     )
+
+        if annotation.action is ...:
+            match parameter.kind:
+                case inspect.Parameter.VAR_POSITIONAL:
+                    annotation = dataclasses.replace(annotation, action='append')
 
         if annotation.choices is ...:
             match typing.get_origin(t) or t:
@@ -288,12 +259,11 @@ class _Annotation[T]:
                 annotation = dataclasses.replace(annotation, metavar=parameter.name)
 
         if annotation.nargs is ...:
-            if (
-                (annotation.action is ...)
-                and (parameter.kind in {parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD})
-                and (parameter.default != parameter.empty)
-            ):
-                annotation = dataclasses.replace(annotation, nargs='?')
+            match annotation.action, parameter.kind, parameter.default == parameter.empty:
+                case builtins.Ellipsis, (parameter.POSITIONAL_ONLY | parameter.POSITIONAL_OR_KEYWORD), False:
+                    annotation = dataclasses.replace(annotation, nargs='?')
+                case 'append', (parameter.VAR_POSITIONAL | parameter.VAR_KEYWORD), True:
+                    annotation = dataclasses.replace(annotation, nargs='*')
 
         if annotation.required is ...:
             if (parameter.kind == parameter.KEYWORD_ONLY) and (parameter.default == parameter.empty):
@@ -328,6 +298,8 @@ class _Decoration[** Params, Return]:
         parser = argparse.ArgumentParser(description=self.decorated.__doc__)
 
         for parameter in inspect.signature(self.decorated).parameters.values():
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+                continue
             add_argument_params = dict(
                 filter(
                     lambda item: item[1] is not ...,
@@ -354,17 +326,32 @@ class _Decoration[** Params, Return]:
         """
         args = sys.argv[1:] if args is ... else args
 
-        parsed_args = vars(self.parser.parse_args(args))
+        parsed_args, remainder_args = self.parser.parse_known_args(args)
+        parsed_args = vars(parsed_args)
 
         # Note that this may be the registered entrypoint of a submodule, not the entrypoint that is decorated.
         args, kwargs = [], {}
         for parameter in inspect.signature(self.decorated).parameters.values():
-            if parameter.kind == parameter.POSITIONAL_ONLY:
-                args.append(parsed_args[parameter.name])
-            elif parameter.kind == parameter.VAR_POSITIONAL:
-                args += parsed_args[parameter.name]
-            else:
-                kwargs[parameter.name] = parsed_args[parameter.name]
+            match parameter.kind:
+                case inspect.Parameter.POSITIONAL_ONLY:
+                    args.append(parsed_args.pop(parameter.name))
+                case inspect.Parameter.POSITIONAL_OR_KEYWORD | inspect.Parameter.KEYWORD_ONLY:
+                    kwargs[parameter.name] = parsed_args.pop(parameter.name)
+                case inspect.Parameter.VAR_POSITIONAL:
+                    args += parsed_args.pop(parameter.name)[0]
+                case inspect.Parameter.VAR_KEYWORD:
+                    parser = argparse.ArgumentParser()
+                    for remainder_arg in remainder_args:
+                        if not remainder_arg.startswith('--'):
+                            continue
+                        parser.add_argument(
+                            remainder_arg, type=lambda arg: _Value.of_arg(arg=arg, t=parameter.annotation)
+                        )
+                    kwargs.update(vars(parser.parse_args(remainder_args)))
+                    remainder_args = []
+
+        if parsed_args or remainder_args:
+            self.parser.exit()
 
         result = self.decorated(*args, **kwargs)
         if inspect.iscoroutinefunction(self.decorated):
@@ -453,14 +440,18 @@ class _Decorator[** Params, Return]:
             case set(_):
                 value: set[str]
 
-                # Using the local `value` in function signature type annotation converts the entire token to a string
-                #  without evaluating it. Rather than let that happen, force evaluation and set the annotation manually.
+                # Using the local `value` in function signature converts the entire annotation to a string without
+                #  evaluating it. Rather than let that happen, force evaluation of the annotation.
                 #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-                def decorated(subcommand) -> None:  # pragma: no cover
+                def decorated(
+                    subcommand: typing.Annotated[
+                        str, _Annotation[str](choices=tuple[str](sorted(value)), metavar='subcommand')
+                    ]
+                ) -> None:  # pragma: no cover
                     raise RuntimeError('This entrypoint should never execute.')
-                decorated.__annotations__['subcommand'] = typing.Annotated[
-                    str, _Annotation[str](choices=tuple[str](sorted(value)), metavar='subcommand')
-                ]
+                decorated.__annotations__['subcommand'] = eval(
+                    decorated.__annotations__['subcommand'], locals(), globals()
+                )
 
                 decoration = _Decoration[Params, Return](decorated=decorated, name=name)
                 decorated.cli = decoration

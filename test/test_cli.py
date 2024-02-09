@@ -187,6 +187,56 @@ def test_parses_types_union_type_parameter() -> None:
     assert entrypoint.cli.run(shlex.split('3.14')) == {'foo': 3.14}
 
 
+parameterize_args = pytest.mark.parametrize('arg,arg_t', [
+    (42, int),
+    (3.14, float),
+    (True, bool),
+    (False, bool),
+    ("Hi!", str),
+    (None, None),
+    (None, types.NoneType),
+    # TODO parameterize the rest.
+    ([1, 2, 3, 4], list[int]),
+    ((42, False, 3.14, 'Hi!'), tuple[int, bool, float, str]),
+    ((42, False, 3.14, 'Hi!', 'Bye!', 'Hah!'), tuple[int, bool, float, str, ...]),
+    (42, int | float | bool | str | None),
+    (3.14, int | float | bool | str | None),
+    (True, int | float | bool | str | None),
+    (False, int | float | bool | str | None),
+    ('Hi!', int | float | bool | str | None),
+    (None, int | float | bool | str | None),
+])
+
+
+@parameterize_args
+def test_parses_positional_only(arg, arg_t) -> None:
+
+    @atools.CLI()
+    def entrypoint(foo: arg_t, /) -> dict[str, arg_t]:
+        return locals()
+
+    assert entrypoint.cli.run([str(arg)]) == {'foo': arg}
+
+
+@parameterize_args
+def test_parses_positional_or_keyword_only(arg, arg_t) -> None:
+
+    @atools.CLI()
+    def entrypoint(foo: arg_t) -> dict[str, arg_t]:
+        return locals()
+
+    assert entrypoint.cli.run([str(arg)]) == {'foo': arg}
+
+@parameterize_args
+def test_parses_keyword_only(arg, arg_t) -> None:
+
+    @atools.CLI()
+    def entrypoint(*, foo: arg_t) -> dict[str, arg_t]:
+        return locals()
+
+    assert entrypoint.cli.run(['--foo', str(arg)]) == {'foo': arg}
+
+
 def test_parses_typing_optional_parameter() -> None:
     @atools.CLI()
     def entrypoint(foo: typing.Optional[int]) -> dict[str, typing.Optional[int]]:
@@ -424,20 +474,20 @@ def test_keyword_only_with_default_works() -> None:
     assert entrypoint.cli.run(shlex.split('--foo 42')) == {'foo': 42}
 
 
-def test_var_positional_does_not_work() -> None:
-    @atools.CLI()
-    def entrypoint(*foo: int) -> dict[str, tuple[int, ...]]: ...
-
-    with pytest.raises(RuntimeError):
-        getattr(entrypoint.cli, 'parser')
-
-
-def test_var_keyword_does_not_work() -> None:
-    @atools.CLI()
-    def entrypoint(**foo: int) -> dict[str, dict[str, int]]: ...
-
-    with pytest.raises(RuntimeError):
-        getattr(entrypoint.cli, 'parser')
+#def test_var_positional_does_not_work() -> None:
+#    @atools.CLI()
+#    def entrypoint(*foo: int) -> dict[str, tuple[int, ...]]: ...
+#
+#    with pytest.raises(RuntimeError):
+#        getattr(entrypoint.cli, 'parser')
+#
+#
+#def test_var_keyword_does_not_work() -> None:
+#    @atools.CLI()
+#    def entrypoint(**foo: int) -> dict[str, dict[str, int]]: ...
+#
+#    with pytest.raises(RuntimeError):
+#        getattr(entrypoint.cli, 'parser')
 
 
 def test_dash_help_prints_entrypoint_doc() -> None:
@@ -517,3 +567,51 @@ def test_cli_names_enforce_subcommand_structure() -> None:
     assert 'qux' in atools.CLI('foo').parser.format_help()
     assert 'quux' in atools.CLI('bar').parser.format_help()
     assert 'corge' in atools.CLI('bar').parser.format_help()
+
+
+def test_unresolved_annotation_raises_runtime_error() -> None:
+    choices = ['a', 'b', 'c']
+
+    @atools.CLI()
+    def entrypoint(foo: 'typing.Annotated[str, atools.CLI.Annotation[str](choices=choices)]') -> ...: ...
+
+    with pytest.raises(RuntimeError):
+        entrypoint.cli.run(shlex.split('a'))
+
+    entrypoint.__annotations__['foo'] = eval(entrypoint.__annotations__['foo'], globals(), locals())
+    entrypoint.cli.run(shlex.split('a'))
+
+
+def test_missing_entrypoint_generates_blank_entrypoint() -> None:
+    assert '-h' in atools.CLI('foobar').parser.format_help()
+
+
+def test_var_positional_args_are_parsed() -> None:
+
+    @atools.CLI()
+    def entrypoint(*foo: int) -> dict[str, tuple[int, ...]]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('1 2 3')) == {'foo': (1, 2, 3)}
+
+
+def test_var_keyword_args_are_parsed() -> None:
+
+    @atools.CLI()
+    def entrypoint(**foo: int) -> dict[str, dict[str, int]]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('--foo 1 --bar 2 --baz 3')) == {'foo': {'foo': 1, 'bar': 2, 'baz': 3}}
+
+
+def test_parses_enum() -> None:
+
+    class Foo(enum.StrEnum):
+        bar = 'bar'
+        baz = 'baz'
+
+    @atools.CLI()
+    def entrypoint(foo: Foo, bar: Foo) -> dict[str, Foo]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split('\'"bar"\' \'"baz"\'')) == {'foo': Foo.bar, 'bar': Foo.baz}
