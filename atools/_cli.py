@@ -144,7 +144,12 @@ class _Value[T]:
 
     @classmethod
     def of_arg(cls, arg: str, t: type[T]) -> T:
-        return cls._of_arg(arg=arg if t is str else ast.literal_eval(arg), t=t)
+        try:
+            arg = ast.literal_eval(arg)
+        except (SyntaxError, ValueError,):
+            pass
+
+        return cls._of_arg(arg=arg, t=t)
 
 
 _LogLevelLiteral = typing.Literal['CRITICAL', 'FATAL', 'ERROR', 'WARN', 'WARNING', 'INFO', 'DEBUG', 'NOTSET',]
