@@ -130,6 +130,10 @@ class _Value[T]:
                 arg: tuple[()]
                 value: T = tuple()
 
+            case Arg, (typing.Literal, args) if arg in args:
+                arg: Arg
+                value: T = arg
+
             # Custom type.
             case Arg, (Origin, (_)) if Origin not in cls._types:
                 arg: Arg
@@ -184,9 +188,6 @@ class _Annotation[T]:
     run: tuple[typing.Callable[[T], None]] = ...
     type: typing.Callable[[str], T] = ...
 
-    def __call__(self, **kwargs) -> _Annotation[T]:
-        return dataclasses.replace(self, **kwargs)
-
     @staticmethod
     def of_parameter(parameter: inspect.Parameter, /) -> _Annotation[T]:
         if isinstance(parameter.annotation, str):
@@ -240,11 +241,11 @@ class _Annotation[T]:
                     annotation = dataclasses.replace(annotation, action='append')
 
         if annotation.choices is ...:
-            match typing.get_origin(t) or t:
+            match typing.get_origin(t) or type(t):
                 case typing.Literal:
                     annotation = dataclasses.replace(annotation, choices=typing.get_args(t))
-                case enum.Enum:
-                    annotation = dataclasses.replace(annotation, choices=(value.name for value in t))
+                case enum.EnumType:
+                    annotation = dataclasses.replace(annotation, choices=tuple(t))
 
         # No automatic actions needed for 'const'.
 
@@ -253,15 +254,36 @@ class _Annotation[T]:
                 annotation = dataclasses.replace(annotation, default=parameter.default)
 
         if annotation.help is ...:
-            if annotation.choices is not ...:
-                help_parts += [f'{{{','.join(filter(lambda choice: not choice.startswith('_'), annotation.choices))}}}']
             if annotation.default is not ...:
                 help_parts += [f'Default:', str(annotation.default)]
+            help_parts += [f'Type:', str(t)]
             annotation = dataclasses.replace(annotation, help=' '.join(help_parts))
 
         if annotation.metavar is ...:
-            if annotation.choices is not ...:
-                annotation = dataclasses.replace(annotation, metavar=parameter.name)
+            match typing.get_origin(t) or type(t):
+                case typing.Literal:
+                    annotation = dataclasses.replace(
+                        annotation,
+                        metavar=f'{{{','.join(
+                            filter(
+                                lambda choice: not choice.startswith('_'),
+                                map(lambda literal: str(literal), typing.get_args(t)))
+                        )}}}'
+                    )
+                case enum.EnumType:
+                    annotation = dataclasses.replace(
+                        annotation,
+                        metavar=f'{{{','.join(
+                            filter(lambda choice: not choice.startswith('_'), map(lambda enum_: str(enum_.value), t))
+                        )}}}'
+                    )
+                case _ if annotation.choices is not ...:
+                    annotation = dataclasses.replace(
+                        annotation,
+                        metavar=f'{{{','.join(
+                            filter(lambda choice: not choice.startswith('_'), map(str, annotation.choices))
+                        )}}}'
+                    )
 
         if annotation.nargs is ...:
             match annotation.action, parameter.kind, parameter.default == parameter.empty:
@@ -420,14 +442,16 @@ class _Decorator[** Params, Return]:
         name = self.name if self.name is not ... else '.'.join([entrypoint.__module__, entrypoint.__qualname__])
         name_parts = tuple(filter(lambda name_part: re.match(r'<.+>', name_part) is None, name.split('.')))
 
-        # Create all the registry links that lead up to the decorated entrypoint.
-        for i in range(len(name_parts)):
-            self._registry.setdefault('.'.join(name_parts[:i]), set()).add(name_parts[i])
-        name = '.'.join(name_parts)
+        decorated: _Decorated[Params, Return] = entrypoint  # type: ignore
 
         # Add the entrypoint decoration to the registry.
-        decorated: _Decorated[Params, Return] = entrypoint  # type: ignore
-        decorated.cli = self._registry[name] = _Decoration[Params, Return](decorated=entrypoint, name=name)
+        decorated.cli = self._registry[name] = _Decoration[Params, Return](
+            decorated=decorated, name=','.join(name_parts)
+        )
+
+        # Create all the registry links that lead up to the entrypoint decoration.
+        for i in range(len(name_parts)):
+            self._registry.setdefault('.'.join(name_parts[:i]), set()).add(name_parts[i])
 
         return decorated
 
@@ -448,11 +472,19 @@ class _Decorator[** Params, Return]:
                 # Using the local `value` in function signature converts the entire annotation to a string without
                 #  evaluating it. Rather than let that happen, force evaluation of the annotation.
                 #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-                def decorated(
-                    subcommand: typing.Annotated[
-                        str, _Annotation[str](choices=tuple[str](sorted(value)), metavar='subcommand')
-                    ]
-                ) -> None:  # pragma: no cover
+
+                subcommand_t = typing.Literal[*sorted(value)]  # noqa
+                annotation = _Annotation[subcommand_t](
+                    help='',
+                    metavar=f'{{{','.join(
+                        filter(
+                            lambda choice: not choice.startswith('_'),
+                            map(lambda literal: str(literal), typing.get_args(subcommand_t))
+                        )
+                    )}}}'
+                )
+
+                def decorated(subcommand: typing.Annotated[subcommand_t, annotation]) -> ...:  # pragma: no cover
                     raise RuntimeError('This entrypoint should never execute.')
                 decorated.__annotations__['subcommand'] = eval(
                     decorated.__annotations__['subcommand'], locals(), globals()

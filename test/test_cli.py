@@ -1,3 +1,4 @@
+import dataclasses
 import enum
 import logging
 import shlex
@@ -22,7 +23,15 @@ class FooTuple(tuple):
         return super().__eq__(other) and isinstance(other, type(self))
 
 
-parameterize_args = pytest.mark.parametrize('arg,arg_t,default,expect', [
+@dataclasses.dataclass(frozen=True)
+class Arg[T]:
+    arg: str
+    t: type[T]
+    default: T
+    expect: T
+
+
+args = [Arg(*args) for args in [
     ('42', int, 0, 42),
     ('3.14', float, 0.0, 3.14),
     ('True', bool, False, True),
@@ -47,74 +56,142 @@ parameterize_args = pytest.mark.parametrize('arg,arg_t,default,expect', [
     ('2', FooEnum, FooEnum.a, FooEnum.b),
     ('\'(42, \"hi!\", \"bye!\")\'', FooTuple[int, str, ...], FooTuple((0, 'Meh!',)), FooTuple((42, 'hi!', 'bye!'))),
     ('42', typing.Annotated[int, 'foo annotation'], 0, 42),
-])
+]]
 
 
-@parameterize_args
-def test_parses_positional_only(arg, arg_t, default, expect) -> None:
+@pytest.mark.parametrize('arg', args)
+def test_parses_positional_only(arg) -> None:
 
     @atools.CLI()
-    def entrypoint(foo: arg_t, /) -> dict[str, arg_t]:
+    def entrypoint(foo: arg.t, /) -> dict[str, arg.t]:
         return locals()
 
-    assert entrypoint.cli.run(shlex.split(arg)) == {'foo': expect}
+    assert entrypoint.cli.run(shlex.split(arg.arg)) == {'foo': arg.expect}
 
 
-@parameterize_args
-def test_parses_positional_only_with_default(arg, arg_t, default, expect) -> None:
+@pytest.mark.parametrize('arg', args)
+def test_parses_positional_only_with_default(arg) -> None:
 
     @atools.CLI()
-    def entrypoint(foo: arg_t = default, /) -> dict[str, arg_t]:
+    def entrypoint(foo: arg.t = arg.default, /) -> dict[str, arg.t]:
         return locals()
 
-    assert entrypoint.cli.run([]) == {'foo': default}
-    assert entrypoint.cli.run(shlex.split(arg)) == {'foo': expect}
+    assert entrypoint.cli.run([]) == {'foo': arg.default}
+    assert entrypoint.cli.run(shlex.split(arg.arg)) == {'foo': arg.expect}
 
 
-@parameterize_args
-def test_parses_positional_or_keyword(arg, arg_t, default, expect) -> None:
+@pytest.mark.parametrize('arg', args)
+def test_parses_positional_or_keyword(arg) -> None:
 
     @atools.CLI()
-    def entrypoint(foo: arg_t) -> dict[str, arg_t]:
+    def entrypoint(foo: arg.t) -> dict[str, arg.t]:
         return locals()
 
     with pytest.raises(SystemExit):
         entrypoint.cli.run([])
-    assert entrypoint.cli.run(shlex.split(arg)) == {'foo': expect}
+    assert entrypoint.cli.run(shlex.split(arg.arg)) == {'foo': arg.expect}
 
 
-@parameterize_args
-def test_parses_positional_or_keyword_with_default(arg, arg_t, default, expect) -> None:
+@pytest.mark.parametrize('arg', args)
+def test_parses_positional_or_keyword_with_default(arg) -> None:
 
     @atools.CLI()
-    def entrypoint(foo: arg_t = default) -> dict[str, arg_t]:
+    def entrypoint(foo: arg.t = arg.default) -> dict[str, arg.t]:
         return locals()
 
-    assert entrypoint.cli.run([]) == {'foo': default}
-    assert entrypoint.cli.run(shlex.split(f'--foo {arg}')) == {'foo': expect}
+    assert entrypoint.cli.run([]) == {'foo': arg.default}
+    assert entrypoint.cli.run(shlex.split(f'--foo {arg.arg}')) == {'foo': arg.expect}
 
 
-@parameterize_args
-def test_parses_keyword_only(arg, arg_t, default, expect) -> None:
+@pytest.mark.parametrize('arg', args)
+def test_parses_keyword_only(arg) -> None:
 
     @atools.CLI()
-    def entrypoint(*, foo: arg_t) -> dict[str, arg_t]:
+    def entrypoint(*, foo: arg.t) -> dict[str, arg.t]:
         return locals()
 
     with pytest.raises(SystemExit):
         assert entrypoint.cli.run([])
-    assert entrypoint.cli.run(shlex.split(f'--foo {arg}')) == {'foo': expect}
+    assert entrypoint.cli.run(shlex.split(f'--foo {arg.arg}')) == {'foo': arg.expect}
 
 
-@parameterize_args
-def test_parses_keyword_only_with_default(arg, arg_t, default, expect) -> None:
+@pytest.mark.parametrize('arg', args)
+def test_parses_keyword_only_with_default(arg) -> None:
 
     @atools.CLI()
-    def entrypoint(*, foo: arg_t = default) -> dict[str, arg_t]:
+    def entrypoint(*, foo: arg.t = arg.default) -> dict[str, arg.t]:
         return locals()
 
-    assert entrypoint.cli.run([]) == {'foo': default}
-    assert entrypoint.cli.run(shlex.split(f'--foo {arg}')) == {'foo': expect}
+    assert entrypoint.cli.run([]) == {'foo': arg.default}
+    assert entrypoint.cli.run(shlex.split(f'--foo {arg.arg}')) == {'foo': arg.expect}
+
+
+@pytest.mark.parametrize('arg0,arg1', zip(args, [*args[1:], *args[:1]]))
+def test_parses_positional_only_2(arg0, arg1) -> None:
+    @atools.CLI()
+    def entrypoint(foo: arg0.t, bar: arg1.t, /) -> dict[str, arg0.t | arg1.t]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split(f'{arg0.arg} {arg1.arg}')) == {'foo': arg0.expect, 'bar': arg1.expect}
+
+
+@pytest.mark.parametrize('arg0,arg1', zip(args, [*args[1:], *args[:1]]))
+def test_parses_positional_only_with_default_2(arg0, arg1) -> None:
+    @atools.CLI()
+    def entrypoint(foo: arg0.t = arg0.default, bar: arg1.t = arg1.default, /) -> dict[str, arg0.t | arg1.t]:
+        return locals()
+
+    assert entrypoint.cli.run([]) == {'foo': arg0.default, 'bar': arg1.default}
+    assert entrypoint.cli.run(shlex.split(arg0.arg)) == {'foo': arg0.expect, 'bar': arg1.default}
+    assert entrypoint.cli.run(shlex.split(f'{arg0.arg} {arg1.arg}')) == {'foo': arg0.expect, 'bar': arg1.expect}
+
+
+@pytest.mark.parametrize('arg0,arg1', zip(args, [*args[1:], *args[:1]]))
+def test_parses_positional_or_keyword_2(arg0, arg1) -> None:
+    @atools.CLI()
+    def entrypoint(foo: arg0.t, bar: arg1.t) -> dict[str, arg0.t | arg1.t]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split(f'{arg0.arg} {arg1.arg}')) == {'foo': arg0.expect, 'bar': arg1.expect}
+
+
+@pytest.mark.parametrize('arg0,arg1', zip(args, [*args[1:], *args[:1]]))
+def test_parses_positional_or_keyword_with_default_2(arg0, arg1) -> None:
+    @atools.CLI()
+    def entrypoint(foo: arg0.t = arg0.default, bar: arg1.t = arg1.default) -> dict[str, arg0.t | arg1.t]:
+        return locals()
+
+    assert entrypoint.cli.run([]) == {'foo': arg0.default, 'bar': arg1.default}
+    assert entrypoint.cli.run(shlex.split(f'--foo {arg0.arg}')) == {'foo': arg0.expect, 'bar': arg1.default}
+    assert entrypoint.cli.run(shlex.split(
+        f'--foo {arg0.arg} --bar {arg1.arg}'
+    )) == {'foo': arg0.expect, 'bar': arg1.expect}
+
+
+@pytest.mark.parametrize('arg0,arg1', zip(args, [*args[1:], *args[:1]]))
+def test_parses_keyword_only_2(arg0, arg1) -> None:
+
+    @atools.CLI()
+    def entrypoint(*, foo: arg0.t, bar: arg1.t) -> dict[str, arg0.t | arg1.t]:
+        return locals()
+
+    assert entrypoint.cli.run(shlex.split(
+        f'--foo {arg0.arg} --bar {arg1.arg}'
+    )) == {'foo': arg0.expect, 'bar': arg1.expect}
+
+
+@pytest.mark.parametrize('arg0,arg1', zip(args, [*args[1:], *args[:1]]))
+def test_parses_keyword_only_with_default_2(arg0, arg1) -> None:
+
+    @atools.CLI()
+    def entrypoint(*, foo: arg0.t = arg0.default, bar: arg1.t = arg1.default) -> dict[str, arg0.t | arg1.t]:
+        return locals()
+
+    assert entrypoint.cli.run([]) == {'foo': arg0.default, 'bar': arg1.default}
+    assert entrypoint.cli.run(shlex.split(f'--foo {arg0.arg}')) == {'foo': arg0.expect, 'bar': arg1.default}
+    assert entrypoint.cli.run(shlex.split(
+        f'--foo {arg0.arg} --bar {arg1.arg}'
+    )) == {'foo': arg0.expect, 'bar': arg1.expect}
 
 
 def test_execute_hidden_subcommand_works() -> None:
@@ -224,6 +301,54 @@ def test_annotation_with_count_action_counts() -> None:
     assert entrypoint.cli.run(shlex.split('-ff')) == {'foo': 2}
 
 
+def test_enum_help_text_shows_choices() -> None:
+
+    @atools.CLI()
+    def entrypoint(foo: FooEnum) -> dict[str, FooEnum]:
+        return locals()
+
+    assert '{1,2,3}' in entrypoint.cli.parser.format_help()
+
+
+def test_literal_help_text_shows_choices() -> None:
+
+    @atools.CLI()
+    def entrypoint(foo: typing.Literal[1, 2, 3]) -> dict[str, typing.Literal[1, 2, 3]]:
+        return locals()
+
+    assert '{1,2,3}' in entrypoint.cli.parser.format_help()
+
+
+def test_help_shows_type_annotation() -> None:
+
+    @atools.CLI()
+    def entrypoint(foo: dict[str, int]) -> ...: ...
+
+    assert str(dict[str, int]) in entrypoint.cli.parser.format_help()
+
+
+def test_enum_enforces_choices() -> None:
+
+    @atools.CLI()
+    def entrypoint(foo: FooEnum) -> dict[str, FooEnum]:
+        return locals()
+
+    with pytest.raises(SystemExit):
+        entrypoint.cli.run('0')
+    assert entrypoint.cli.run('1') == {'foo': FooEnum.a}
+
+
+def test_literal_enforces_choices() -> None:
+
+    @atools.CLI()
+    def entrypoint(foo: typing.Literal[1, 2, 3]) -> dict[str, typing.Literal[1, 2, 3]]:
+        return locals()
+
+    with pytest.raises(SystemExit):
+        entrypoint.cli.run('0')
+    assert entrypoint.cli.run('1') == {'foo': 1}
+
+
 def test_cli_names_enforce_subcommand_structure() -> None:
 
     for name in ['foo.baz', 'foo.qux', 'bar.quux', 'bar.corge']:
@@ -272,16 +397,3 @@ def test_var_keyword_args_are_parsed() -> None:
         return locals()
 
     assert entrypoint.cli.run(shlex.split('--foo 1 --bar 2 --baz 3')) == {'foo': {'foo': 1, 'bar': 2, 'baz': 3}}
-
-
-def test_parses_enum() -> None:
-
-    class Foo(enum.StrEnum):
-        bar = 'bar'
-        baz = 'baz'
-
-    @atools.CLI()
-    def entrypoint(foo: Foo, bar: Foo) -> dict[str, Foo]:
-        return locals()
-
-    assert entrypoint.cli.run(shlex.split('\'"bar"\' \'"baz"\'')) == {'foo': Foo.bar, 'bar': Foo.baz}
