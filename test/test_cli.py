@@ -25,13 +25,17 @@ class FooTuple(tuple):
 
 @dataclasses.dataclass(frozen=True)
 class Arg[T]:
-    arg: str
-    t: type[T]
-    default: T
-    expect: T
+    arg: str = ...
+    t: type[T] = ...
+    default: T = ...
+    expect: T = ...
+
+    #@property
+    #def __name__(self) -> str:
+    #    return f'{self.t!r}'
 
 
-args = [Arg(*args) for args in [
+args = [*map(lambda _args: Arg(*_args), [
     ('42', int, 0, 42),
     ('3.14', float, 0.0, 3.14),
     ('True', bool, False, True),
@@ -39,6 +43,7 @@ args = [Arg(*args) for args in [
     ('Hi!', str, 'Bye!', 'Hi!'),
     ('None', None, None, None),
     ('None', types.NoneType, None, None),
+    ('"()"', tuple[()], (), ()),
     ('"[1, 2, 3, 4]"', list[int], [], [1, 2, 3, 4]),
     ('"(42, False, 3.14, \'Hi!\')"', tuple[int, bool, float, str], (0, True, 0.0, 'Bye!'), (42, False, 3.14, 'Hi!')),
     ('"(3.14, \'Hi!\', \'Bye!\')"', tuple[float, str, ...], (0.0, 'Meh!'), (3.14, 'Hi!', 'Bye!')),
@@ -53,10 +58,10 @@ args = [Arg(*args) for args in [
     ('"{True: {4.0: {42: \'yes!\'}}}"', dict[bool, dict[float, dict[int, str]]], {}, {True: {4.0: {42: 'yes!'}}}),
     ('"{1, 2, 3, 4}"', frozenset[int], frozenset(), frozenset({1, 2, 3, 4})),
     ('"{1, 2, 3, 4}"', set[int], set(), {1, 2, 3, 4}),
-    ('2', FooEnum, FooEnum.a, FooEnum.b),
+    ('b', FooEnum, FooEnum.a, FooEnum.b),
     ('\'(42, \"hi!\", \"bye!\")\'', FooTuple[int, str, ...], FooTuple((0, 'Meh!',)), FooTuple((42, 'hi!', 'bye!'))),
     ('42', typing.Annotated[int, 'foo annotation'], 0, 42),
-]]
+])]
 
 
 @pytest.mark.parametrize('arg', args)
@@ -192,6 +197,39 @@ def test_parses_keyword_only_with_default_2(arg0, arg1) -> None:
     assert entrypoint.cli.run(shlex.split(
         f'--foo {arg0.arg} --bar {arg1.arg}'
     )) == {'foo': arg0.expect, 'bar': arg1.expect}
+
+
+@pytest.mark.parametrize(
+    'arg', [Arg(*_args) for _args in [
+        ('42', float),
+        ('3.14', int),
+        ('True', str),
+        ('Hi!', bool),
+        ('None', str),
+        ('None', bool),
+        ('"[1, 2, 3, 4]"', list[float]),
+        ('"(42, False, 3.14, \'Hi!\')"', tuple[int, bool, float]),
+        ('"(3.14, \'Hi!\', \'Bye!\')"', tuple[str, ...]),
+        ('42', float | bool | str | None),
+        ('3.14', int | bool | str | None),
+        ('True', int | float | str | None),
+        ('False', int | float | str | None),
+        ('"\'Hi!\'"', int | float | bool | None),
+        ("None", int | float | bool | str),
+        ("42", typing.Optional[str]),
+        ("3.14", typing.Optional[int]),
+        ('"{True: {4.0: {42: \'yes!\'}}}"', dict[bool, dict[float, dict[int, int]]]),
+        ('"{1, 2, 3, 4}"', frozenset[bool]),
+        ('"{1, 2, 3, 4}"', set[str]),
+        ('42', typing.Annotated[float, 'foo annotation']),
+    ]])
+def test_bad_arg_does_not_parse(arg: Arg) -> None:
+
+    @atools.CLI()
+    def entrypoint(foo: arg.t) -> ...: ...
+
+    with pytest.raises(atools.CLI.Exception):
+        entrypoint.cli.run(shlex.split(arg.arg))
 
 
 def test_execute_hidden_subcommand_works() -> None:
@@ -333,9 +371,9 @@ def test_enum_enforces_choices() -> None:
     def entrypoint(foo: FooEnum) -> dict[str, FooEnum]:
         return locals()
 
-    with pytest.raises(SystemExit):
-        entrypoint.cli.run('0')
-    assert entrypoint.cli.run('1') == {'foo': FooEnum.a}
+    with pytest.raises(atools.CLI.Exception):
+        entrypoint.cli.run('d')
+    assert entrypoint.cli.run('a') == {'foo': FooEnum.a}
 
 
 def test_literal_enforces_choices() -> None:
@@ -344,7 +382,7 @@ def test_literal_enforces_choices() -> None:
     def entrypoint(foo: typing.Literal[1, 2, 3]) -> dict[str, typing.Literal[1, 2, 3]]:
         return locals()
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(atools.CLI.Exception):
         entrypoint.cli.run('0')
     assert entrypoint.cli.run('1') == {'foo': 1}
 
@@ -364,13 +402,13 @@ def test_cli_names_enforce_subcommand_structure() -> None:
     assert 'corge' in atools.CLI('bar').parser.format_help()
 
 
-def test_unresolved_annotation_raises_runtime_error() -> None:
+def test_unresolved_annotation_raises_assertion_error() -> None:
     choices = ['a', 'b', 'c']
 
     @atools.CLI()
     def entrypoint(foo: 'typing.Annotated[str, atools.CLI.Annotation[str](choices=choices)]') -> ...: ...
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(AssertionError):
         entrypoint.cli.run(shlex.split('a'))
 
     entrypoint.__annotations__['foo'] = eval(entrypoint.__annotations__['foo'], globals(), locals())

@@ -62,98 +62,67 @@ import pydantic
 type _Name = str
 
 
-class _Entrypoint[** Params, Return](typing.Protocol):
-    __call__: typing.Callable[Params, Return]
-
-
-class _Decorated[** Params, Return](typing.Protocol):
-    __call__: typing.Callable[Params, Return]
-    cli: _Decoration[Params, Return]
+class _Exception(Exception): ...
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _Value[T]:
-    _primitive_types: typing.ClassVar[frozenset[type]] = frozenset({
-        builtins.bool,
-        builtins.float,
-        builtins.int,
-        builtins.str,
-    })
-    _container_types: typing.ClassVar[frozenset[type]] = frozenset({
-        builtins.dict,
-        builtins.frozenset,
-        builtins.list,
-        builtins.set,
-        builtins.tuple,
-    })
-    _types: typing.ClassVar[frozenset[type]] = frozenset(_primitive_types | _container_types)
+class _Parser[T]:
+    t: type[T]
 
-    @classmethod
-    def _of_arg[T](cls, arg: object, t: type[T]) -> T:
-        match type(arg), t if (origin := typing.get_origin(t)) is None else (origin, typing.get_args(t)):
-            # Primitive types.
-            case (
-                (builtins.bool, builtins.bool)
-                | (builtins.float, builtins.float)
-                | (builtins.int, builtins.int)
-                | (builtins.str, builtins.str)
-                # None and types.NoneType are not the same but are used interchangeably in Python typing.
-                | (types.NoneType, (None | types.NoneType))
-            ):
-                value: T = arg
+    type _Arg = bool | float | int | str | list | dict | set | None
 
-            # Union type.
-            # types.UnionType and typing.Union are not equivalent. If that changes, just use types.UnionType.
-            #  ref. https://github.com/python/cpython/issues/105499.
-            case Arg, ((types.UnionType | typing.Union), Args) if Arg in Args:
-                arg: Arg
-                value: T = arg
+    def _parse_arg(self, arg: _Arg) -> T:
+        match self.t if (origin := typing.get_origin(self.t)) is None else (origin, typing.get_args(self.t)):
+            case types.NoneType | None:
+                assert arg is None, f'{self} expected `None`, got `{arg}`.'
+            case builtins.bool | builtins.int | builtins.float | builtins.str:
+                assert isinstance(arg, self.t), f'{self} expected `{self.t}`, got `{arg}`'
+            case (builtins.frozenset | builtins.list | builtins.set), (Value,):
+                assert isinstance(arg, (list, set))
+                arg = self.t([_Parser(t=Value)._parse_arg(value) for value in arg])
+            case builtins.dict, (Key, Value):
+                assert isinstance(arg, dict)
+                arg = {_Parser(t=Key)._parse_arg(key): _Parser(t=Value)._parse_arg(value) for key, value in arg.items()}
 
-            # Container types.
-            case builtins.dict, (builtins.dict, (Key, Value)):
-                arg: dict
-                value: T = {cls._of_arg(key, Key): cls._of_arg(value, Value) for key, value in arg.items()}
-            case (
-                (builtins.set, (builtins.frozenset, (Value,)))
-                | (builtins.list, (builtins.list, (Value,)))
-                | (builtins.set, (builtins.set, (Value,)))
-                | (builtins.tuple, (builtins.tuple, (Value, builtins.Ellipsis)))
-            ):
-                arg: typing.Iterable[Value]
-                value: T = t([cls._of_arg(value, Value) for value in arg])
+            case builtins.tuple, ():
+                assert arg == tuple()
+            case builtins.tuple, (Value,):
+                assert isinstance(arg, tuple) and len(arg) == 1
+                arg = tuple([_Parser(t=Value)._parse_arg(arg[0])])
+            case builtins.tuple, (Value, builtins.Ellipsis):
+                assert isinstance(arg, tuple)
+                arg = tuple([_Parser(t=Value)._parse_arg(value) for value in arg])
+            case builtins.tuple, (Value, *Values):
+                assert isinstance(arg, tuple) and len(arg) > 0
+                arg = (_Parser(t=Value)._parse_arg(arg[0]), *_Parser(t=tuple[*Values])._parse_arg(arg[1:]))
 
-            # Tuples require evaluation of each arg until none are left.
-            case builtins.tuple, (builtins.tuple, (Arg, *Args)):
-                arg: tuple
-                value: T = tuple([cls._of_arg(arg[0], Arg), *cls._of_arg(arg[1:], tuple[*Args])])
-            case builtins.tuple, (builtins.tuple, ()):
-                arg: tuple[()]
-                value: T = tuple()
+            case (typing.Union | types.UnionType), Values:
+                assert type(arg) in Values
+            case typing.Literal, Values:
+                assert arg in Values
 
-            case Arg, (typing.Literal, args) if arg in args:
-                arg: Arg
-                value: T = arg
+            case (Value, _) | Value if issubclass(Value, enum.Enum):
+                assert isinstance(arg, str) and hasattr(Value, arg)
+                arg = getattr(Value, arg)
 
-            # Custom type.
-            case Arg, (Origin, (_)) if Origin not in cls._types:
-                arg: Arg
-                value: T = Origin(arg)
-            case Arg, _ if origin is None and t not in cls._types:
-                arg: Arg
-                value: T = t(arg)
-            case _:
-                raise RuntimeError(f'Given {t=!r} could not be enforced on {arg=!r}.')
+            case (Value, _) | Value:
+                arg = Value(arg)
+
+        return arg
+
+    def parse_arg(self, arg: str) -> T:
+        if self.t != str:
+            try:
+                arg: _Parser._Arg = ast.literal_eval(arg)
+            except (SyntaxError, ValueError,):
+                pass
+
+        try:
+            value = self._parse_arg(arg=arg)
+        except AssertionError as e:
+            raise _Exception(f'Could not parse {arg=!r}. {e}.')
 
         return value
-
-    @classmethod
-    def of_arg(cls, arg: str, t: type[T]) -> T:
-        try:
-            arg = ast.literal_eval(arg)
-        except (SyntaxError, ValueError,):
-            pass
-
-        return cls._of_arg(arg=arg, t=t)
 
 
 _LogLevelLiteral = typing.Literal['CRITICAL', 'FATAL', 'ERROR', 'WARN', 'WARNING', 'INFO', 'DEBUG', 'NOTSET',]
@@ -190,11 +159,10 @@ class _Annotation[T]:
 
     @staticmethod
     def of_parameter(parameter: inspect.Parameter, /) -> _Annotation[T]:
-        if isinstance(parameter.annotation, str):
-            raise RuntimeError(
-                f'{parameter.annotation=!r} is a str (e.g. not evaluated).'
-                f' See https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime.'
-            )
+        assert not isinstance(parameter.annotation, str), (
+            f'{parameter.annotation=!r} is not evaluated. You may need to manually evaluate this annotation.'
+            f' See https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime.'
+        )
 
         annotation = _Annotation()
 
@@ -207,7 +175,7 @@ class _Annotation[T]:
             ):
                 t = parameter.annotation
             case _:  # pragma: no cover
-                raise RuntimeError(f'{parameter.name=!r} has unsupported {parameter.kind=!r}.')
+                raise _Exception(f'{parameter.name=!r} has unsupported {parameter.kind=!r}.')
 
         help_parts = []
         if typing.get_origin(t) is typing.Annotated:
@@ -298,15 +266,19 @@ class _Annotation[T]:
 
         if annotation.type is ...:
             if annotation.action not in {'count', 'store_false', 'store_true'}:
-                annotation = dataclasses.replace(annotation, type=lambda arg: _Value.of_arg(arg=arg, t=t))
+                annotation = dataclasses.replace(
+                    annotation, type=lambda literal: _Parser(t=t).parse_arg(arg=literal)
+                )
 
         return annotation
 
     @staticmethod
-    def log_level_with_logger(logger: logging.Logger, /) -> _Annotation[T: _LogLevelLiteral]:
+    def log_level_with_logger(logger: logging.Logger, /) -> _Annotation[_LogLevelLiteral]:
         return _Annotation[T](
             choices=typing.get_args(_LogLevelLiteral),
-            type=lambda arg: logger.setLevel(value := _Value.of_arg(arg=arg, t=str)) or value
+            type=lambda literal: logger.setLevel(
+                value := _Parser(t=_LogLevelLiteral).parse_arg(arg=literal)
+            ) or value
         )
 
 
@@ -372,19 +344,28 @@ class _Decoration[** Params, Return]:
                         if not remainder_arg.startswith('--'):
                             continue
                         parser.add_argument(
-                            remainder_arg, type=lambda arg: _Value.of_arg(arg=arg, t=parameter.annotation)
+                            remainder_arg, type=lambda arg: _Parser(t=parameter.annotation).parse_arg(arg=arg)
                         )
                     kwargs.update(vars(parser.parse_args(remainder_args)))
                     remainder_args = []
 
-        if parsed_args or remainder_args:
-            self.parser.exit()
+        assert not parsed_args, f'Unrecognized args: {parsed_args!r}.'
+        assert not remainder_args, f'Unrecognized args: {remainder_args!r}.'
 
         result = self.decorated(*args, **kwargs)
         if inspect.iscoroutinefunction(self.decorated):
             result = asyncio.run(result)
 
         return result
+
+
+class _Entrypoint[** Params, Return](typing.Protocol):
+    __call__: typing.Callable[Params, Return]
+
+
+class _Decorated[** Params, Return](typing.Protocol):
+    __call__: typing.Callable[Params, Return]
+    cli: _Decoration[Params, Return]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -435,6 +416,7 @@ class _Decorator[** Params, Return]:
     _registry: typing.ClassVar[dict[_Name, _Decoration | set[str]]] = {}
 
     Annotation: typing.ClassVar[type[_Annotation]] = _Annotation
+    Exception: typing.ClassVar[type[_Exception]] = _Exception
     LogLevelLiteral: typing.ClassVar[type[_LogLevelLiteral]] = _LogLevelLiteral
     Name: typing.ClassVar[type[_Name]] = _Name
 
