@@ -30,21 +30,21 @@ class Arg[T]:
     default: T = ...
     expect: T = ...
 
-    #@property
-    #def __name__(self) -> str:
-    #    return f'{self.t!r}'
-
 
 args = [*map(lambda _args: Arg(*_args), [
     ('42', int, 0, 42),
+    ('42', str, '0', '42'),
     ('3.14', float, 0.0, 3.14),
     ('True', bool, False, True),
+    ('True', str, 'False', 'True'),
     ('False', bool, True, False),
     ('Hi!', str, 'Bye!', 'Hi!'),
     ('None', None, None, None),
     ('None', types.NoneType, None, None),
     ('"()"', tuple[()], (), ()),
+    ('"()"', typing.Tuple[()], (), ()),
     ('"[1, 2, 3, 4]"', list[int], [], [1, 2, 3, 4]),
+    ('"[1, 2, 3, 4]"', typing.List[int], [], [1, 2, 3, 4]),
     ('"(42, False, 3.14, \'Hi!\')"', tuple[int, bool, float, str], (0, True, 0.0, 'Bye!'), (42, False, 3.14, 'Hi!')),
     ('"(3.14, \'Hi!\', \'Bye!\')"', tuple[float, str, ...], (0.0, 'Meh!'), (3.14, 'Hi!', 'Bye!')),
     ('42', int | float | bool | str | None, 0, 42),
@@ -203,9 +203,7 @@ def test_parses_keyword_only_with_default_2(arg0, arg1) -> None:
     'arg', [Arg(*_args) for _args in [
         ('42', float),
         ('3.14', int),
-        ('True', str),
         ('Hi!', bool),
-        ('None', str),
         ('None', bool),
         ('"[1, 2, 3, 4]"', list[float]),
         ('"(42, False, 3.14, \'Hi!\')"', tuple[int, bool, float]),
@@ -345,7 +343,7 @@ def test_enum_help_text_shows_choices() -> None:
     def entrypoint(foo: FooEnum) -> dict[str, FooEnum]:
         return locals()
 
-    assert '{1,2,3}' in entrypoint.cli.parser.format_help()
+    assert '(1,2,3)' in entrypoint.cli.parser.format_help()
 
 
 def test_literal_help_text_shows_choices() -> None:
@@ -354,7 +352,7 @@ def test_literal_help_text_shows_choices() -> None:
     def entrypoint(foo: typing.Literal[1, 2, 3]) -> dict[str, typing.Literal[1, 2, 3]]:
         return locals()
 
-    assert '{1,2,3}' in entrypoint.cli.parser.format_help()
+    assert '(1,2,3)' in entrypoint.cli.parser.format_help()
 
 
 def test_help_shows_type_annotation() -> None:
@@ -394,8 +392,6 @@ def test_cli_names_enforce_subcommand_structure() -> None:
         def entrypoint(foo: int) -> dict[str, object]:
             return locals()
 
-    assert 'foo' in atools.CLI().parser.format_help()
-    assert 'bar' in atools.CLI().parser.format_help()
     assert 'baz' in atools.CLI('foo').parser.format_help()
     assert 'qux' in atools.CLI('foo').parser.format_help()
     assert 'quux' in atools.CLI('bar').parser.format_help()

@@ -71,7 +71,7 @@ class _Parser[T]:
 
     type _Arg = bool | float | int | str | list | dict | set | None
 
-    def _parse_arg(self, arg: _Arg) -> T:
+    def _parse_arg(self, arg: _Arg, /) -> T:
         match self.t if (origin := typing.get_origin(self.t)) is None else (origin, typing.get_args(self.t)):
             case types.NoneType | None:
                 assert arg is None, f'{self} expected `None`, got `{arg}`.'
@@ -79,7 +79,7 @@ class _Parser[T]:
                 assert isinstance(arg, self.t), f'{self} expected `{self.t}`, got `{arg}`'
             case (builtins.frozenset | builtins.list | builtins.set), (Value,):
                 assert isinstance(arg, (list, set))
-                arg = self.t([_Parser(t=Value)._parse_arg(value) for value in arg])
+                arg = origin([_Parser(t=Value)._parse_arg(value) for value in arg])
             case builtins.dict, (Key, Value):
                 assert isinstance(arg, dict)
                 arg = {_Parser(t=Key)._parse_arg(key): _Parser(t=Value)._parse_arg(value) for key, value in arg.items()}
@@ -110,7 +110,9 @@ class _Parser[T]:
 
         return arg
 
-    def parse_arg(self, arg: str) -> T:
+    def parse_arg(self, arg: str, /) -> T:
+        """Returns a T parsed from given arg or throws an _Exception upon failure."""
+
         if self.t != str:
             try:
                 arg: _Parser._Arg = ast.literal_eval(arg)
@@ -118,7 +120,7 @@ class _Parser[T]:
                 pass
 
         try:
-            value = self._parse_arg(arg=arg)
+            value = self._parse_arg(arg)
         except AssertionError as e:
             raise _Exception(f'Could not parse {arg=!r}. {e}.')
 
@@ -130,6 +132,11 @@ _LogLevelLiteral = typing.Literal['CRITICAL', 'FATAL', 'ERROR', 'WARN', 'WARNING
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class _Annotation[T]:
+    """Generates and collects sane argument defaults intended for argparse.ArgumentParser.add_argument(...).
+
+    Any _Annotation fields that are not `Ellipses` should be passed to <parser instance>.add_argument(...) to add a
+    flag.
+    """
     name_or_flags: list[str] = ...
     action: typing.Literal[
         'store',
@@ -159,28 +166,27 @@ class _Annotation[T]:
 
     @staticmethod
     def of_parameter(parameter: inspect.Parameter, /) -> _Annotation[T]:
+        """Returns an _Annotation converted from given `parameter`.
+
+        `parameter.annotation` may be of `typing.Annotated[T, <annotations>...]`. If an _Annotation instance is included
+        in the annotations, non-Ellipses fields will override anything this method would normally generate. This is
+        useful if special argparse behavior for the argument is desired.
+
+        ref. https://docs.python.org/3/library/argparse.html#argparse.ArgumentParser.add_argument
+        """
+
         assert not isinstance(parameter.annotation, str), (
             f'{parameter.annotation=!r} is not evaluated. You may need to manually evaluate this annotation.'
             f' See https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime.'
         )
 
         annotation = _Annotation()
+        t = parameter.annotation
 
-        match parameter.kind:
-            case (
-                inspect.Parameter.KEYWORD_ONLY
-                | inspect.Parameter.POSITIONAL_ONLY
-                | inspect.Parameter.POSITIONAL_OR_KEYWORD
-                | inspect.Parameter.VAR_POSITIONAL
-            ):
-                t = parameter.annotation
-            case _:  # pragma: no cover
-                raise _Exception(f'{parameter.name=!r} has unsupported {parameter.kind=!r}.')
-
-        help_parts = []
+        help_lines = []
         if typing.get_origin(t) is typing.Annotated:
             t, *args = typing.get_args(t)
-            help_parts += [*filter(lambda arg: isinstance(arg, str), args)]
+            help_lines += [*filter(lambda arg: isinstance(arg, str), args)]
             for override_add_arguments in filter(lambda arg: isinstance(arg, _Annotation), args):
                 annotation = dataclasses.replace(
                     annotation,
@@ -223,35 +229,39 @@ class _Annotation[T]:
 
         if annotation.help is ...:
             if annotation.default is not ...:
-                help_parts += [f'Default:', str(annotation.default)]
-            help_parts += [f'Type:', str(t)]
-            annotation = dataclasses.replace(annotation, help=' '.join(help_parts))
+                help_lines.append(f'Default: {annotation.default}')
+            if annotation.choices is not ...:
+                help_lines.append(f'Choices: {annotation.choices}')
+            help_lines.append(f'Type: {t}')
+            annotation = dataclasses.replace(annotation, help='\n'.join(help_lines))
 
         if annotation.metavar is ...:
-            match typing.get_origin(t) or type(t):
-                case typing.Literal:
-                    annotation = dataclasses.replace(
-                        annotation,
-                        metavar=f'{{{','.join(
-                            filter(
-                                lambda choice: not choice.startswith('_'),
-                                map(lambda literal: str(literal), typing.get_args(t)))
-                        )}}}'
-                    )
-                case enum.EnumType:
-                    annotation = dataclasses.replace(
-                        annotation,
-                        metavar=f'{{{','.join(
-                            filter(lambda choice: not choice.startswith('_'), map(lambda enum_: str(enum_.value), t))
-                        )}}}'
-                    )
-                case _ if annotation.choices is not ...:
-                    annotation = dataclasses.replace(
-                        annotation,
-                        metavar=f'{{{','.join(
-                            filter(lambda choice: not choice.startswith('_'), map(str, annotation.choices))
-                        )}}}'
-                    )
+            if annotation.choices is not ...:
+                annotation = dataclasses.replace(annotation, metavar=f'{{{parameter.name}}}')
+        #    match typing.get_origin(t) or type(t):
+        #        case typing.Literal:
+        #            annotation = dataclasses.replace(
+        #                annotation,
+        #                metavar=f'{{{','.join(
+        #                    filter(
+        #                        lambda choice: not choice.startswith('_'),
+        #                        map(lambda literal: str(literal), typing.get_args(t)))
+        #                )}}}'
+        #            )
+        #        case enum.EnumType:
+        #            annotation = dataclasses.replace(
+        #                annotation,
+        #                metavar=f'{{{','.join(
+        #                    filter(lambda choice: not choice.startswith('_'), map(lambda enum_: str(enum_.value), t))
+        #                )}}}'
+        #            )
+        #        case _ if annotation.choices is not ...:
+        #            annotation = dataclasses.replace(
+        #                annotation,
+        #                metavar=f'{{{','.join(
+        #                    filter(lambda choice: not choice.startswith('_'), map(str, annotation.choices))
+        #                )}}}'
+        #            )
 
         if annotation.nargs is ...:
             match annotation.action, parameter.kind, parameter.default == parameter.empty:
@@ -266,9 +276,7 @@ class _Annotation[T]:
 
         if annotation.type is ...:
             if annotation.action not in {'count', 'store_false', 'store_true'}:
-                annotation = dataclasses.replace(
-                    annotation, type=lambda literal: _Parser(t=t).parse_arg(arg=literal)
-                )
+                annotation = dataclasses.replace(annotation, type=lambda arg: _Parser(t=t).parse_arg(arg))
 
         return annotation
 
@@ -276,9 +284,7 @@ class _Annotation[T]:
     def log_level_with_logger(logger: logging.Logger, /) -> _Annotation[_LogLevelLiteral]:
         return _Annotation[T](
             choices=typing.get_args(_LogLevelLiteral),
-            type=lambda literal: logger.setLevel(
-                value := _Parser(t=_LogLevelLiteral).parse_arg(arg=literal)
-            ) or value
+            type=lambda arg: logger.setLevel(value := _Parser(t=_LogLevelLiteral).parse_arg(arg)) or value
         )
 
 
@@ -294,7 +300,10 @@ class _Decoration[** Params, Return]:
 
     @property
     def parser(self) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(description=self.decorated.__doc__)
+        parser = argparse.ArgumentParser(
+            description=self.decorated.__doc__,
+            formatter_class=argparse.RawTextHelpFormatter,
+        )
 
         for parameter in inspect.signature(self.decorated).parameters.values():
             if parameter.kind is inspect.Parameter.VAR_KEYWORD:
@@ -312,16 +321,37 @@ class _Decoration[** Params, Return]:
     def run(self, args: typing.Sequence[str] = ...) -> object:
         """Parses args, runs parser's registered entrypoint with parsed args, and return the result.
 
-        Note that the entrypoint that is run is determined by the parser. It may be an entrypoint in a submodule of the
-        decorated entrypoint, not the decorated entrypoint.
+        Note that the entrypoint that is run is determined by `self.name` and given `args`.
 
-        If the decorated function is a couroutinefunction, it will be run via `asyncio.run`.
+        ex.
+            Given the following registered entrypoints.
+
+                @atools.CLI()  # Registers as f'{__name__}.foo'
+                def foo(arg: int) -> ...: ...
+
+                @atools.CLI()  # Registers as f'{__name__}.bar'
+                def bar(arg: float) -> ...: ...
+
+                @atools.CLI(f'{__name__}.qux')  # Registers as f'{__name__}.qux'
+                async def baz(arg: str) -> ...: ...  # Async entrypoints are also fine.
+
+            Entrypoints may be called like so.
+                atools.CLI(__name__).run(['foo', '42'])
+                atools.CLI(f'{__name__}.foo').run(['42'])  # Equivalent to previous line.
+
+                atools.CLI(__name__).run(['bar', '3.14'])
+                atools.CLI(f'{__name__}.foo').run(['3.14'])  # Equivalent to previous line.
+
+                atools.CLI(__name__).run(['qux', 'Hi!'])
+                atools.CLI(f'{__name__}.qux').run(['Hi!'])  # Equivalent to previous line.
+
+        If the entrypoint a couroutinefunction, it will be run via `asyncio.run`.
 
         Args (Positional or Keyword):
             args (default: sys.argv[1]): Arguments to be parsed and passed to parser's registered entrypoint.
 
         Returns:
-            object: Result of executing registered entrypoint with given args.
+            object: Result of executing entrypoint with given args.
         """
         args = sys.argv[1:] if args is ... else args
 
@@ -341,11 +371,10 @@ class _Decoration[** Params, Return]:
                 case inspect.Parameter.VAR_KEYWORD:
                     parser = argparse.ArgumentParser()
                     for remainder_arg in remainder_args:
-                        if not remainder_arg.startswith('--'):
-                            continue
-                        parser.add_argument(
-                            remainder_arg, type=lambda arg: _Parser(t=parameter.annotation).parse_arg(arg=arg)
-                        )
+                        if remainder_arg.startswith('--'):
+                            parser.add_argument(
+                                remainder_arg, type=lambda arg: _Parser(t=parameter.annotation).parse_arg(arg)
+                            )
                     kwargs.update(vars(parser.parse_args(remainder_args)))
                     remainder_args = []
 
@@ -370,7 +399,7 @@ class _Decorated[** Params, Return](typing.Protocol):
 
 @dataclasses.dataclass(frozen=True)
 class _Decorator[** Params, Return]:
-    """Decorate a function, adding `<decorated_function>.cli.run` function.
+    """Decorate a function, adding `.cli` attribute.
 
     The `.cli.run` function parses command line arguments (e.g. `sys.argv[1:]`) and executes the decorated function with
     the parsed arguments.
@@ -379,9 +408,6 @@ class _Decorator[** Params, Return]:
     subcommand structure corresponding to submodule structure starting with the decorated function's module. Any module
     with a function name matching given `entrypoint` name have a corresponding CLI subcommand generated with an
     equivalent CLI signature.
-
-    TODO Mention that types.Dict is equivalent to dict, etc. We get it right, as long as typing.get_origin return an
-     instantiable type.
 
     Parser subcommand documentation is generated from corresponding module docstrings.
 
@@ -432,13 +458,13 @@ class _Decorator[** Params, Return]:
         )
 
         # Create all the registry links that lead up to the entrypoint decoration.
-        for i in range(len(name_parts)):
+        for i in range(1, len(name_parts)):
             self._registry.setdefault('.'.join(name_parts[:i]), set()).add(name_parts[i])
 
         return decorated
 
     @property
-    def decoration(self) -> _Decoration[Params, Return]:
+    def _decoration(self) -> _Decoration[Params, Return]:
         name = '' if self.name is ... else self.name
 
         match value := self._registry.get(name):
@@ -451,10 +477,6 @@ class _Decorator[** Params, Return]:
             case set(_):
                 value: set[str]
 
-                # Using the local `value` in function signature converts the entire annotation to a string without
-                #  evaluating it. Rather than let that happen, force evaluation of the annotation.
-                #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-
                 subcommand_t = typing.Literal[*sorted(value)]  # noqa
                 annotation = _Annotation[subcommand_t](
                     help='',
@@ -466,11 +488,12 @@ class _Decorator[** Params, Return]:
                     )}}}'
                 )
 
-                def decorated(subcommand: typing.Annotated[subcommand_t, annotation]) -> ...:  # pragma: no cover
-                    raise RuntimeError('This entrypoint should never execute.')
-                decorated.__annotations__['subcommand'] = eval(
-                    decorated.__annotations__['subcommand'], locals(), globals()
-                )
+                # Using the local variables in function signature converts the entire annotation to a string without
+                #  evaluating it. Rather than let that happen, force evaluation of the annotation.
+                #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
+                def decorated(subcommand: typing.Annotated[subcommand_t, annotation]) -> None:
+                    self.parser.print_usage()
+                decorated.__annotations__['subcommand'] = eval(decorated.__annotations__['subcommand'], None, locals())
 
                 decoration = _Decoration[Params, Return](decorated=decorated, name=name)
                 decorated.cli = decoration
@@ -481,7 +504,7 @@ class _Decorator[** Params, Return]:
 
     @property
     def parser(self) -> argparse.ArgumentParser:
-        return self.decoration.parser
+        return self._decoration.parser
 
     def run(self, args: typing.Sequence[str] = ...) -> object:
         args = sys.argv[1:] if args is ... else args
@@ -493,7 +516,7 @@ class _Decorator[** Params, Return]:
             name_parts.append(args.pop(0))
         name = '.'.join(name_parts)
 
-        return _Decorator(name).decoration.run(args)
+        return _Decorator(name)._decoration.run(args)
 
 
 CLI = _Decorator
