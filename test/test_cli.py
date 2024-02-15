@@ -343,7 +343,7 @@ def test_enum_help_text_shows_choices() -> None:
     def entrypoint(foo: FooEnum) -> dict[str, FooEnum]:
         return locals()
 
-    assert '(1,2,3)' in entrypoint.cli.parser.format_help()
+    assert '(\'a\', \'b\', \'c\')' in entrypoint.cli.parser.format_help()
 
 
 def test_literal_help_text_shows_choices() -> None:
@@ -352,7 +352,7 @@ def test_literal_help_text_shows_choices() -> None:
     def entrypoint(foo: typing.Literal[1, 2, 3]) -> dict[str, typing.Literal[1, 2, 3]]:
         return locals()
 
-    assert '(1,2,3)' in entrypoint.cli.parser.format_help()
+    assert '(\'1\', \'2\', \'3\')' in entrypoint.cli.parser.format_help()
 
 
 def test_help_shows_type_annotation() -> None:

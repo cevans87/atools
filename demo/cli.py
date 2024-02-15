@@ -188,5 +188,16 @@ def var_keyword(**kwargs: int | float | str) -> None:
     print(locals())
 
 
+@atools.CLI()
+def _hidden(foo: int) -> None:
+    """Demo for CLI entrypoint that is hidden from help text.
+
+    Ex:
+        python3 -m demo cli -h
+        python3 -m demo cli _hidden 42
+    """
+    print(locals())
+
+
 if __name__ == '__main__':
     atools.CLI(__name__).run()

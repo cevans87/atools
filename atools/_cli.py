@@ -51,6 +51,7 @@ import dataclasses
 import enum
 import inspect
 import logging
+import pprint
 import re
 import types
 import typing
@@ -231,37 +232,21 @@ class _Annotation[T]:
             if annotation.default is not ...:
                 help_lines.append(f'Default: {annotation.default}')
             if annotation.choices is not ...:
-                help_lines.append(f'Choices: {annotation.choices}')
-            help_lines.append(f'Type: {t}')
+                match typing.get_origin(t) or type(t):
+                    case enum.EnumType:
+                        choice_names = tuple(map(lambda value: value.name, t))
+                    case _:
+                        choice_names = tuple(map(str, annotation.choices))
+                show_choice_names = tuple(filter(lambda choice_name: not choice_name.startswith('_'), choice_names))
+                help_lines.append(
+                    f'Choices: {pprint.pformat(show_choice_names, compact=True, width=60)}'
+                )
+            help_lines.append(f'Type: {typing.Literal if typing.get_origin(t) is typing.Literal else t}')
             annotation = dataclasses.replace(annotation, help='\n'.join(help_lines))
 
         if annotation.metavar is ...:
             if annotation.choices is not ...:
                 annotation = dataclasses.replace(annotation, metavar=f'{{{parameter.name}}}')
-        #    match typing.get_origin(t) or type(t):
-        #        case typing.Literal:
-        #            annotation = dataclasses.replace(
-        #                annotation,
-        #                metavar=f'{{{','.join(
-        #                    filter(
-        #                        lambda choice: not choice.startswith('_'),
-        #                        map(lambda literal: str(literal), typing.get_args(t)))
-        #                )}}}'
-        #            )
-        #        case enum.EnumType:
-        #            annotation = dataclasses.replace(
-        #                annotation,
-        #                metavar=f'{{{','.join(
-        #                    filter(lambda choice: not choice.startswith('_'), map(lambda enum_: str(enum_.value), t))
-        #                )}}}'
-        #            )
-        #        case _ if annotation.choices is not ...:
-        #            annotation = dataclasses.replace(
-        #                annotation,
-        #                metavar=f'{{{','.join(
-        #                    filter(lambda choice: not choice.startswith('_'), map(str, annotation.choices))
-        #                )}}}'
-        #            )
 
         if annotation.nargs is ...:
             match annotation.action, parameter.kind, parameter.default == parameter.empty:
@@ -478,20 +463,22 @@ class _Decorator[** Params, Return]:
                 value: set[str]
 
                 subcommand_t = typing.Literal[*sorted(value)]  # noqa
-                annotation = _Annotation[subcommand_t](
-                    help='',
-                    metavar=f'{{{','.join(
-                        filter(
-                            lambda choice: not choice.startswith('_'),
-                            map(lambda literal: str(literal), typing.get_args(subcommand_t))
-                        )
-                    )}}}'
-                )
+                #annotation = _Annotation[subcommand_t](
+                #    help='',
+                #
+                #    metavar=f'{{{','.join(
+                #        filter(
+                #            lambda choice: not choice.startswith('_'),
+                #            map(lambda literal: str(literal), typing.get_args(subcommand_t))
+                #        )
+                #    )}}}'
+                #)
 
                 # Using the local variables in function signature converts the entire annotation to a string without
                 #  evaluating it. Rather than let that happen, force evaluation of the annotation.
                 #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-                def decorated(subcommand: typing.Annotated[subcommand_t, annotation]) -> None:
+                #def decorated(subcommand: typing.Annotated[subcommand_t, annotation]) -> None:
+                def decorated(subcommand: subcommand_t) -> None:
                     self.parser.print_usage()
                 decorated.__annotations__['subcommand'] = eval(decorated.__annotations__['subcommand'], None, locals())
 
