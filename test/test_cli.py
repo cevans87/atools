@@ -253,9 +253,7 @@ def test_async_entrypoint_works() -> None:
 
 def test_dash_help_prints_parameter_annotation() -> None:
     @atools.CLI()
-    def entrypoint(
-        foo: typing.Annotated[int, 'This is my comment.']
-    ) -> dict[str, int]: ...
+    def entrypoint(foo: typing.Annotated[int, 'This is my comment.']) -> ...: ...
 
     assert 'This is my comment.' in entrypoint.cli.parser.format_help()
 
@@ -275,9 +273,7 @@ def test_positional_only_without_default_works() -> None:
 
 def test_dash_help_prints_entrypoint_doc() -> None:
     @atools.CLI()
-    def entrypoint(
-        foo: int,
-    ) -> dict[str, int]:
+    def entrypoint(foo: int) -> ...:
         """What's up, Doc?"""
 
     assert """What's up, Doc?""" in entrypoint.cli.parser.format_help()
@@ -287,12 +283,7 @@ def test_annotation_log_level_of_logger_sets_choices() -> None:
     logger = logging.getLogger('test_annotated_of_logger_sets_choices')
 
     @atools.CLI()
-    def entrypoint(
-        foo: typing.Annotated[
-            atools.CLI.LogLevelLiteral,
-            atools.CLI.Annotation[atools.CLI.LogLevelLiteral].log_level_with_logger(logger),
-        ] = 'DEBUG'
-    ) -> dict[str, pydantic.PositiveInt]: ...
+    def entrypoint(foo: atools.CLI.Annotated.log_level(logger) = 'DEBUG') -> ...: ...
 
     for choice in logging.getLevelNamesMapping().keys():
         assert choice in entrypoint.cli.parser.format_help()
@@ -304,11 +295,8 @@ def test_annotation_log_level_of_logger_sets_log_level() -> None:
 
     @atools.CLI()
     def entrypoint(
-        foo: typing.Annotated[
-            atools.CLI.LogLevelLiteral,
-            atools.CLI.Annotation[atools.CLI.LogLevelLiteral].log_level_with_logger(logger),
-        ] = 'DEBUG'
-    ) -> dict[str, atools.CLI.LogLevelLiteral]:
+        foo: atools.CLI.Annotated.log_level(logger) = 'DEBUG',
+    ) -> dict[str, atools.CLI.Annotated.LogLevelLiteral]:
         return locals()
 
     assert logger.level == logging.ERROR

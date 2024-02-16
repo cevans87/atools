@@ -128,7 +128,9 @@ class _Parser[T]:
         return value
 
 
-_LogLevelLiteral = typing.Literal['CRITICAL', 'FATAL', 'ERROR', 'WARN', 'WARNING', 'INFO', 'DEBUG', 'NOTSET',]
+class _Value(enum.Enum):
+    autodetect = 'autodetect'
+    ignore = 'ignore'
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -138,7 +140,7 @@ class _Annotation[T]:
     Any _Annotation fields that are not `Ellipses` should be passed to <parser instance>.add_argument(...) to add a
     flag.
     """
-    name_or_flags: list[str] = ...
+    name_or_flags: list[str] = _Value.autodetect
     action: typing.Literal[
         'store',
         'store_const',
@@ -149,21 +151,23 @@ class _Annotation[T]:
         'count',
         'help',
         'version',
-    ] | typing.Type[argparse.Action] = ...
-    choices: typing.Iterable[T] = ...
-    const: T = ...
-    default: T = ...
-    dest: str = ...
-    help: str = ...
-    metavar: str | None = ...
+    ] | typing.Type[argparse.Action] = _Value.autodetect
+    choices: typing.Iterable[T] = _Value.autodetect
+    const: T = _Value.autodetect
+    default: T = _Value.autodetect
+    dest: str = _Value.autodetect
+    help: str = _Value.autodetect
+    metavar: str | None = _Value.autodetect
     nargs: pydantic.NonNegativeInt | typing.Literal[
         '?',
         '*',
         '+'
-    ] = ...
-    required: bool = ...
-    run: tuple[typing.Callable[[T], None]] = ...
-    type: typing.Callable[[str], T] = ...
+    ] = _Value.autodetect
+    required: bool = _Value.autodetect
+    run: tuple[typing.Callable[[T], None]] = _Value.autodetect
+    type: typing.Callable[[str], T] = _Value.autodetect
+
+    Value: typing.ClassVar[type[_Value]] = _Value
 
     @staticmethod
     def of_parameter(parameter: inspect.Parameter, /) -> _Annotation[T]:
@@ -191,10 +195,13 @@ class _Annotation[T]:
             for override_add_arguments in filter(lambda arg: isinstance(arg, _Annotation), args):
                 annotation = dataclasses.replace(
                     annotation,
-                    **dict(filter(lambda item: item[1] is not ..., dataclasses.asdict(override_add_arguments).items()))
+                    **dict(filter(
+                        lambda item: item[1] is not _Value.autodetect,
+                        dataclasses.asdict(override_add_arguments).items(),
+                    )),
                 )
 
-        if annotation.name_or_flags is ...:
+        if annotation.name_or_flags is _Value.autodetect:
             match parameter.kind, parameter.default == parameter.empty:
                 case (
                     (parameter.POSITIONAL_ONLY, _)
@@ -210,12 +217,12 @@ class _Annotation[T]:
                         annotation, name_or_flags=[f'--{parameter.name.replace('_', '-')}']
                     )
 
-        if annotation.action is ...:
+        if annotation.action is _Value.autodetect:
             match parameter.kind:
                 case inspect.Parameter.VAR_POSITIONAL:
                     annotation = dataclasses.replace(annotation, action='append')
 
-        if annotation.choices is ...:
+        if annotation.choices is _Value.autodetect:
             match typing.get_origin(t) or type(t):
                 case typing.Literal:
                     annotation = dataclasses.replace(annotation, choices=typing.get_args(t))
@@ -224,14 +231,14 @@ class _Annotation[T]:
 
         # No automatic actions needed for 'const'.
 
-        if annotation.default is ...:
+        if annotation.default is _Value.autodetect:
             if parameter.default != parameter.empty:
                 annotation = dataclasses.replace(annotation, default=parameter.default)
 
-        if annotation.help is ...:
-            if annotation.default is not ...:
-                help_lines.append(f'Default: {annotation.default}')
-            if annotation.choices is not ...:
+        if annotation.help is _Value.autodetect:
+            if annotation.default not in _Value:
+                help_lines.append(f'default: {annotation.default!r}')
+            if annotation.choices not in _Value:
                 match typing.get_origin(t) or type(t):
                     case enum.EnumType:
                         choice_names = tuple(map(lambda value: value.name, t))
@@ -239,38 +246,94 @@ class _Annotation[T]:
                         choice_names = tuple(map(str, annotation.choices))
                 show_choice_names = tuple(filter(lambda choice_name: not choice_name.startswith('_'), choice_names))
                 help_lines.append(
-                    f'Choices: {pprint.pformat(show_choice_names, compact=True, width=60)}'
+                    f'choices: {pprint.pformat(show_choice_names, compact=True, width=60)}'
                 )
-            help_lines.append(f'Type: {typing.Literal if typing.get_origin(t) is typing.Literal else t}')
+            help_lines.append(f'type: {typing.Literal if typing.get_origin(t) is typing.Literal else t!r}')
             annotation = dataclasses.replace(annotation, help='\n'.join(help_lines))
 
-        if annotation.metavar is ...:
-            if annotation.choices is not ...:
+        if annotation.metavar is _Value.autodetect:
+            if annotation.choices not in _Value:
                 annotation = dataclasses.replace(annotation, metavar=f'{{{parameter.name}}}')
 
-        if annotation.nargs is ...:
+        if annotation.nargs is _Value.autodetect:
             match annotation.action, parameter.kind, parameter.default == parameter.empty:
                 case builtins.Ellipsis, (parameter.POSITIONAL_ONLY | parameter.POSITIONAL_OR_KEYWORD), False:
                     annotation = dataclasses.replace(annotation, nargs='?')
                 case 'append', (parameter.VAR_POSITIONAL | parameter.VAR_KEYWORD), True:
                     annotation = dataclasses.replace(annotation, nargs='*')
 
-        if annotation.required is ...:
+        if annotation.required is _Value.autodetect:
             if (parameter.kind == parameter.KEYWORD_ONLY) and (parameter.default == parameter.empty):
                 annotation = dataclasses.replace(annotation, required=True)
 
-        if annotation.type is ...:
+        if annotation.type is _Value.autodetect:
             if annotation.action not in {'count', 'store_false', 'store_true'}:
                 annotation = dataclasses.replace(annotation, type=lambda arg: _Parser(t=t).parse_arg(arg))
 
         return annotation
 
+
+_LogLevelLiteral = typing.Literal['CRITICAL', 'FATAL', 'ERROR', 'WARN', 'WARNING', 'INFO', 'DEBUG', 'NOTSET',]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _Annotated:
+
+    LogLevelLiteral: typing.ClassVar[type[_LogLevelLiteral]] = _LogLevelLiteral
+
     @staticmethod
-    def log_level_with_logger(logger: logging.Logger, /) -> _Annotation[_LogLevelLiteral]:
-        return _Annotation[T](
-            choices=typing.get_args(_LogLevelLiteral),
-            type=lambda arg: logger.setLevel(value := _Parser(t=_LogLevelLiteral).parse_arg(arg)) or value
-        )
+    def verbose(
+        logger_or_name: logging.Logger | str,
+        /,
+    ) -> type[typing.Annotated[pydantic.NonNegativeInt, _Annotation[pydantic.NonNegativeInt]]]:
+        logger = logging.getLogger(logger_or_name) if  isinstance(logger_or_name, str) else logger_or_name
+
+        # FIXME this doesn't have the side effect of setting the log level if not flags are given (action isn't
+        #  executed).
+        class VerboseAction(argparse.Action):
+            def __call__(
+                self,
+                parser: argparse.ArgumentParser,
+                namespace: argparse.Namespace,
+                values: tuple[int],
+                option_string: str = None,
+            ) -> None:
+                verbose = getattr(namespace, self.dest, None)
+                if verbose is None:
+                    verbose = logging.CRITICAL
+                verbose = max(10, verbose - 10)
+                setattr(namespace, self.dest, verbose)
+
+                logger.setLevel(verbose)
+
+        return typing.Annotated[
+            pydantic.NonNegativeInt,
+            _Annotation[pydantic.NonNegativeInt](
+                name_or_flags=['-v', '--verbose'],
+                action=VerboseAction,
+                #default=logging.CRITICAL,
+                nargs=0,
+                type=_Value.ignore,
+            ),
+        ]
+
+    @staticmethod
+    def log_level(
+        logger_or_name: logging.Logger | str,
+        /,
+    ) -> type[typing.Annotated[_LogLevelLiteral, _Annotation[_LogLevelLiteral]]]:
+        logger = logger_or_name if not isinstance(logger_or_name, str) else logging.getLogger(logger_or_name)
+        return typing.Annotated[
+            _LogLevelLiteral,
+            _Annotation[_LogLevelLiteral](
+                name_or_flags=['--log-level'],
+                choices=typing.get_args(_LogLevelLiteral),
+                help="TODO",
+                type=lambda arg: logger.setLevel(
+                    value := _Parser(t=_LogLevelLiteral).parse_arg(arg)
+                ) or value,
+            )
+        ]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -285,17 +348,21 @@ class _Decoration[** Params, Return]:
 
     @property
     def parser(self) -> argparse.ArgumentParser:
+        signature = inspect.signature(self.decorated)
         parser = argparse.ArgumentParser(
-            description=self.decorated.__doc__,
+            description='\n'.join([
+                self.decorated.__doc__,
+                f'return type: {pprint.pformat(signature.return_annotation, compact=True, width=75)}'
+            ]),
             formatter_class=argparse.RawTextHelpFormatter,
         )
 
-        for parameter in inspect.signature(self.decorated).parameters.values():
+        for parameter in signature.parameters.values():
             if parameter.kind is inspect.Parameter.VAR_KEYWORD:
                 continue
             add_argument_params = dict(
                 filter(
-                    lambda item: item[1] is not ...,
+                    lambda item: not isinstance(item[1], typing.Hashable) or item[1] not in _Value,
                     dataclasses.asdict(_Annotation().of_parameter(parameter)).items()
                 )
             )
@@ -308,19 +375,20 @@ class _Decoration[** Params, Return]:
 
         Note that the entrypoint that is run is determined by `self.name` and given `args`.
 
-        ex.
+        Ex.
             Given the following registered entrypoints.
 
-                @atools.CLI()  # Registers as f'{__name__}.foo'
+                @atools.CLI()  # Automatically registered as f'{__name__}.foo'
                 def foo(arg: int) -> ...: ...
 
-                @atools.CLI()  # Registers as f'{__name__}.bar'
+                @atools.CLI()  # Automatically registered as f'{__name__}.bar'
                 def bar(arg: float) -> ...: ...
 
-                @atools.CLI(f'{__name__}.qux')  # Registers as f'{__name__}.qux'
+                @atools.CLI(f'{__name__}.qux')  # Manually registered as f'{__name__}.qux'
                 async def baz(arg: str) -> ...: ...  # Async entrypoints are also fine.
 
             Entrypoints may be called like so.
+
                 atools.CLI(__name__).run(['foo', '42'])
                 atools.CLI(f'{__name__}.foo').run(['42'])  # Equivalent to previous line.
 
@@ -333,10 +401,11 @@ class _Decoration[** Params, Return]:
         If the entrypoint a couroutinefunction, it will be run via `asyncio.run`.
 
         Args (Positional or Keyword):
-            args (default: sys.argv[1]): Arguments to be parsed and passed to parser's registered entrypoint.
+            args: Arguments to be parsed and passed to parser's registered entrypoint.
+                Default: sys.argv[1:]
 
         Returns:
-            object: Result of executing entrypoint with given args.
+            object: Result of executing registered entrypoint with given args.
         """
         args = sys.argv[1:] if args is ... else args
 
@@ -426,9 +495,9 @@ class _Decorator[** Params, Return]:
 
     _registry: typing.ClassVar[dict[_Name, _Decoration | set[str]]] = {}
 
+    Annotated: typing.ClassVar[type[_Annotated]] = _Annotated
     Annotation: typing.ClassVar[type[_Annotation]] = _Annotation
     Exception: typing.ClassVar[type[_Exception]] = _Exception
-    LogLevelLiteral: typing.ClassVar[type[_LogLevelLiteral]] = _LogLevelLiteral
     Name: typing.ClassVar[type[_Name]] = _Name
 
     def __call__(self, entrypoint: _Entrypoint[Params, Return], /) -> _Decorated[Params, Return]:
@@ -456,29 +525,15 @@ class _Decorator[** Params, Return]:
             case _Decoration(decorated=_, name=_):
                 decoration = value
             case None:
-                def decorated() -> None: ...
+                def decorated() -> None:
+                    """This CLI has no registered entrypoint or subcommands."""
                 decoration = _Decoration(decorated=decorated, name=name)
                 decorated.cli = decoration
             case set(_):
-                value: set[str]
-
-                subcommand_t = typing.Literal[*sorted(value)]  # noqa
-                #annotation = _Annotation[subcommand_t](
-                #    help='',
-                #
-                #    metavar=f'{{{','.join(
-                #        filter(
-                #            lambda choice: not choice.startswith('_'),
-                #            map(lambda literal: str(literal), typing.get_args(subcommand_t))
-                #        )
-                #    )}}}'
-                #)
-
                 # Using the local variables in function signature converts the entire annotation to a string without
                 #  evaluating it. Rather than let that happen, force evaluation of the annotation.
                 #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-                #def decorated(subcommand: typing.Annotated[subcommand_t, annotation]) -> None:
-                def decorated(subcommand: subcommand_t) -> None:
+                def decorated(subcommand: typing.Literal[*sorted(value)]) -> None:  # noqa
                     self.parser.print_usage()
                 decorated.__annotations__['subcommand'] = eval(decorated.__annotations__['subcommand'], None, locals())
 
