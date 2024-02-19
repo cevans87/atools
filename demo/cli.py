@@ -6,6 +6,7 @@ import typing
 import atools
 
 logger = logging.getLogger(__name__)
+logger.setLevel('ERROR')
 
 
 @atools.CLI()
@@ -25,7 +26,7 @@ def simple_arg_with_help_text(
     """Demo for CLI entrypoint with positional-only args without defaults.
 
     Ex:
-        python3 -m demo cli positional_only_without_defaults 42 Hi!
+        python3 -m demo cli positional_only_without_defaults Hi!
     """
     print(locals())
 
@@ -259,7 +260,7 @@ def _hidden_subcommand(foo: int) -> None:
 
 
 @atools.CLI()
-def log_level_with_bound_logger(log_level: atools.CLI.Annotated.log_level(logger) = 'ERROR') -> None:
+def log_level_with_bound_logger(log_level: atools.CLI.Annotated.log_level(logger) = 'NOTSET') -> None:
     """Demo for CLI entrypoint where bound logger has level set to parsed `log_level` value.
 
     Ex:
@@ -274,12 +275,11 @@ def log_level_with_bound_logger(log_level: atools.CLI.Annotated.log_level(logger
     logger.info('If you can see this log line, your log_level is at least INFO.')
     logger.warning('If you can see this log line, your log_level is at least WARNING.')
     logger.error('If you can see this log line, your log_level is at least ERROR.')
-    logger.fatal('If you can see this log line, your log_level is at least FATAL.')
     logger.critical('If you can see this log line, your log_level is at least CRITICAL.')
 
 
 @atools.CLI()
-def log_level_with_bound_logger_name(log_level: atools.CLI.Annotated.log_level(__name__) = 'ERROR') -> None:
+def log_level_with_bound_logger_name(log_level: atools.CLI.Annotated.log_level(__name__) = 'NOTSET') -> None:
     """Demo for CLI entrypoint where logger with bound name has level set to parsed `log_level` value.
 
     Ex:
@@ -289,17 +289,17 @@ def log_level_with_bound_logger_name(log_level: atools.CLI.Annotated.log_level(_
     print(locals())
 
     print(f'Logger level is set to {logging.getLevelName(logging.getLogger(__name__).getEffectiveLevel())}')
+    logging.CRITICAL
 
     logging.getLogger(__name__).debug('If you can see this log line, your log_level is at least DEBUG.')
     logging.getLogger(__name__).info('If you can see this log line, your log_level is at least INFO.')
     logging.getLogger(__name__).warning('If you can see this log line, your log_level is at least WARNING.')
     logging.getLogger(__name__).error('If you can see this log line, your log_level is at least ERROR.')
-    logging.getLogger(__name__).fatal('If you can see this log line, your log_level is at least FATAL.')
     logging.getLogger(__name__).critical('If you can see this log line, your log_level is at least CRITICAL.')
 
 
 @atools.CLI()
-def verbose_with_bound_logger(verbose: atools.CLI.Annotated.verbose(logger) = logging.DEBUG) -> None:
+def verbose_with_bound_logger(verbose: atools.CLI.Annotated.verbose(logger) = 0) -> None:
     """Demo for CLI entrypoint where bound logger has level set to parsed `verbose` value.
 
     Ex:
@@ -316,7 +316,6 @@ def verbose_with_bound_logger(verbose: atools.CLI.Annotated.verbose(logger) = lo
     logger.info('If you can see this log line, your log_level is at least INFO.')
     logger.warning('If you can see this log line, your log_level is at least WARNING.')
     logger.error('If you can see this log line, your log_level is at least ERROR.')
-    logger.fatal('If you can see this log line, your log_level is at least FATAL.')
     logger.critical('If you can see this log line, your log_level is at least CRITICAL.')
 
 

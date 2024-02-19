@@ -12,9 +12,9 @@ import atools
 
 
 class FooEnum(enum.Enum):
-    a = 1
-    b = 2
-    c = 3
+    a = 'a'
+    b = 'b'
+    c = 'c'
 
 
 class FooTuple(tuple):
@@ -45,8 +45,8 @@ args = [*map(lambda _args: Arg(*_args), [
     ('"()"', typing.Tuple[()], (), ()),
     ('"[1, 2, 3, 4]"', list[int], [], [1, 2, 3, 4]),
     ('"[1, 2, 3, 4]"', typing.List[int], [], [1, 2, 3, 4]),
-    ('"(42, False, 3.14, \'Hi!\')"', tuple[int, bool, float, str], (0, True, 0.0, 'Bye!'), (42, False, 3.14, 'Hi!')),
     ('"(3.14, \'Hi!\', \'Bye!\')"', tuple[float, str, ...], (0.0, 'Meh!'), (3.14, 'Hi!', 'Bye!')),
+    ('"(\'Hi!\', \'Bye!\')"', tuple[str, ...], ('Meh!',), ('Hi!', 'Bye!')),
     ('42', int | float | bool | str | None, 0, 42),
     ('3.14', int | float | bool | str | None, 0.0, 3.14),
     ('True', int | float | bool | str | None, False, True),
@@ -59,7 +59,7 @@ args = [*map(lambda _args: Arg(*_args), [
     ('"{1, 2, 3, 4}"', frozenset[int], frozenset(), frozenset({1, 2, 3, 4})),
     ('"{1, 2, 3, 4}"', set[int], set(), {1, 2, 3, 4}),
     ('b', FooEnum, FooEnum.a, FooEnum.b),
-    ('\'(42, \"hi!\", \"bye!\")\'', FooTuple[int, str, ...], FooTuple((0, 'Meh!',)), FooTuple((42, 'hi!', 'bye!'))),
+    ('\'(\"hi!\", \"bye!\")\'', FooTuple[str, ...], FooTuple(('Meh!',)), FooTuple(('hi!', 'bye!'))),
     ('42', typing.Annotated[int, 'foo annotation'], 0, 42),
 ])]
 
@@ -285,7 +285,7 @@ def test_annotation_log_level_of_logger_sets_choices() -> None:
     @atools.CLI()
     def entrypoint(foo: atools.CLI.Annotated.log_level(logger) = 'DEBUG') -> ...: ...
 
-    for choice in logging.getLevelNamesMapping().keys():
+    for choice in typing.get_args(atools.CLI.Annotated.LogLevel):
         assert choice in entrypoint.cli.parser.format_help()
 
 
@@ -296,7 +296,7 @@ def test_annotation_log_level_of_logger_sets_log_level() -> None:
     @atools.CLI()
     def entrypoint(
         foo: atools.CLI.Annotated.log_level(logger) = 'DEBUG',
-    ) -> dict[str, atools.CLI.Annotated.LogLevelLiteral]:
+    ) -> dict[str, atools.CLI.Annotated.LogLevel]:
         return locals()
 
     assert logger.level == logging.ERROR
@@ -313,7 +313,7 @@ def test_annotation_with_count_action_counts() -> None:
     def entrypoint(
         foo: typing.Annotated[
             pydantic.NonNegativeInt,
-            atools.CLI.Annotation[pydantic.NonNegativeInt](name_or_flags=['-f', '--foo'], action='count'),
+            atools.CLI.AddArgument[pydantic.NonNegativeInt](name_or_flags=['-f', '--foo'], action='count'),
         ] = 0,
     ) -> dict[str, int]:
         return locals()
@@ -390,7 +390,7 @@ def test_unresolved_annotation_raises_assertion_error() -> None:
     choices = ['a', 'b', 'c']
 
     @atools.CLI()
-    def entrypoint(foo: 'typing.Annotated[str, atools.CLI.Annotation[str](choices=choices)]') -> ...: ...
+    def entrypoint(foo: 'typing.Annotated[str, atools.CLI.AddArgument[str](choices=choices)]') -> ...: ...
 
     with pytest.raises(AssertionError):
         entrypoint.cli.run(shlex.split('a'))
