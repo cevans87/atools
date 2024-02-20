@@ -1,8 +1,8 @@
 from asyncio import (
     ensure_future, Event, gather, get_event_loop, new_event_loop, set_event_loop
 )
-from atools import memoize
-import atools._memoize_decorator as test_module
+import atools
+import atools._memoize as test_module
 from datetime import timedelta
 from pathlib import Path, PosixPath
 import pytest
@@ -21,7 +21,7 @@ def get_table_len(db_path: Path) -> int:
 
 @pytest.fixture
 def async_lock() -> MagicMock:
-    with patch.object(test_module, 'AsyncLock', side_effect=None) as async_lock:
+    with patch.object(test_module.asyncio, 'Lock', side_effect=None) as async_lock:
         yield async_lock
 
 
@@ -40,20 +40,20 @@ def dill() -> test_module.Pickler:
 
 @pytest.fixture
 def sync_lock() -> MagicMock:
-    with patch.object(test_module, 'SyncLock', side_effect=None) as sync_lock:
+    with patch.object(test_module.threading, 'Lock', side_effect=None) as sync_lock:
         yield sync_lock
 
 
 @pytest.fixture
 def time() -> MagicMock:
-    with patch.object(test_module, 'time') as time:
+    with patch.object(test_module.time, 'time') as time:
         yield time
 
 
 def test_zero_args() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         body()
 
@@ -65,7 +65,7 @@ def test_zero_args() -> None:
 def test_none_arg() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo(_bar) -> None:
         body()
 
@@ -78,7 +78,7 @@ def test_class_function() -> None:
     body = MagicMock()
 
     class Foo:
-        @memoize
+        @atools.Memoize()
         def foo(self) -> None:
             body()
 
@@ -97,7 +97,7 @@ def test_class_function() -> None:
 def test_keyword_same_as_default() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo(bar: int, baz: int = 1) -> int:
         body(bar, baz)
 
@@ -113,7 +113,7 @@ def test_keyword_same_as_default() -> None:
 async def test_async() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     async def foo(bar: int, baz: int = 1) -> int:
         body(bar, baz)
 
@@ -128,7 +128,7 @@ async def test_async() -> None:
 def test_sync_size() -> None:
     body = MagicMock()
 
-    @memoize(size=1)
+    @atools.Memoize(size=1)
     def foo(bar) -> None:
         body(bar)
 
@@ -147,7 +147,7 @@ def test_sync_size() -> None:
 async def test_async_size() -> None:
     body = MagicMock()
 
-    @memoize(size=1)
+    @atools.Memoize(size=1)
     async def foo(bar) -> None:
         body(bar)
 
@@ -165,7 +165,7 @@ async def test_async_size() -> None:
 def test_sync_size_with_duration() -> None:
     body = MagicMock()
 
-    @memoize(duration=timedelta(hours=1), size=1)
+    @atools.Memoize(duration=timedelta(hours=1), size=1)
     def foo(bar) -> None:
         body(bar)
 
@@ -178,7 +178,7 @@ def test_sync_size_with_duration() -> None:
 async def test_async_size_with_duration() -> None:
     body = MagicMock()
 
-    @memoize(duration=timedelta(hours=1), size=1)
+    @atools.Memoize(duration=timedelta(hours=1), size=1)
     async def foo(bar) -> None:
         body(bar)
 
@@ -193,7 +193,7 @@ def test_sync_exception() -> None:
 
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         body()
         raise FooException()
@@ -216,7 +216,7 @@ async def test_async_exception() -> None:
 
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     async def foo() -> None:
         body()
         raise FooException()
@@ -235,7 +235,7 @@ async def test_async_exception() -> None:
 def test_expire_current_call(time: MagicMock) -> None:
     body = MagicMock()
 
-    @memoize(duration=timedelta(days=1))
+    @atools.Memoize(duration=timedelta(days=1))
     def foo() -> None:
         body()
 
@@ -254,7 +254,7 @@ def test_expire_current_call(time: MagicMock) -> None:
 def test_expire_old_call(time: MagicMock) -> None:
     body = MagicMock()
 
-    @memoize(duration=timedelta(days=1))
+    @atools.Memoize(duration=timedelta(days=1))
     def foo(bar: int) -> None:
         body(bar)
 
@@ -273,7 +273,7 @@ def test_expire_old_call(time: MagicMock) -> None:
 def test_expire_old_item_does_not_expire_new(time: MagicMock) -> None:
     body = MagicMock()
 
-    @memoize(duration=timedelta(days=1))
+    @atools.Memoize(duration=timedelta(days=1))
     def foo() -> None:
         body()
 
@@ -293,7 +293,7 @@ def test_expire_old_item_does_not_expire_new(time: MagicMock) -> None:
 def test_expire_head_of_line_refresh_does_not_stop_eviction(time: MagicMock) -> None:
     body = MagicMock()
 
-    @memoize(duration=timedelta(hours=24))
+    @atools.Memoize(duration=timedelta(hours=24))
     def foo(bar: int) -> None:
         body(bar)
 
@@ -314,7 +314,7 @@ def test_expire_head_of_line_refresh_does_not_stop_eviction(time: MagicMock) -> 
 async def test_async_stops_thundering_herd() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     async def foo() -> None:
         body()
 
@@ -325,7 +325,7 @@ async def test_async_stops_thundering_herd() -> None:
 def test_size_le_zero_raises() -> None:
     for size in [-1, 0]:
         try:
-            @memoize(size=size)
+            @atools.Memoize(size=size)
             def foo() -> None:
                 ...
         except AssertionError:
@@ -337,7 +337,7 @@ def test_size_le_zero_raises() -> None:
 def test_expire_le_zero_raises() -> None:
     for duration in [timedelta(seconds=-1), timedelta(seconds=0), -1, 0, -1.0, 0.0]:
         try:
-            @memoize(duration=duration)
+            @atools.Memoize(duration=duration)
             def foo() -> None:
                 ...
         except AssertionError:
@@ -348,7 +348,7 @@ def test_expire_le_zero_raises() -> None:
 
 def test_args_overlaps_kwargs_raises() -> None:
 
-    @memoize
+    @atools.Memoize()
     def foo(_bar: int) -> None:
         ...
 
@@ -363,7 +363,7 @@ def test_args_overlaps_kwargs_raises() -> None:
 def test_sync_reset_clears_cache() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         body()
 
@@ -380,7 +380,7 @@ def test_sync_reset_clears_cache() -> None:
 async def test_async_reset_clears_cache() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     async def foo() -> None:
         body()
 
@@ -398,7 +398,7 @@ def test_works_with_property() -> None:
 
     class Foo:
         @property
-        @memoize
+        @atools.Memoize()
         def bar(self) -> int:
             body(self)
 
@@ -416,7 +416,7 @@ def test_works_with_property() -> None:
 
 
 def test_sync_locks_sync(sync_lock: MagicMock) -> None:
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         ...
 
@@ -426,7 +426,7 @@ def test_sync_locks_sync(sync_lock: MagicMock) -> None:
 
 @pytest.mark.asyncio
 async def test_async_does_not_sync_lock(sync_lock: MagicMock) -> None:
-    @memoize
+    @atools.Memoize()
     async def foo() -> None:
         ...
 
@@ -447,7 +447,7 @@ async def test_async_locks_async(async_lock: MagicMock) -> None:
     type(async_lock_context).__aenter__ = __aenter__
     type(async_lock_context).__aexit__ = __aexit__
 
-    @memoize
+    @atools.Memoize()
     async def foo() -> None:
         ...
 
@@ -467,7 +467,7 @@ def test_sync_does_not_async_lock(async_lock: MagicMock) -> None:
     type(async_lock_context).__aenter__ = __aenter__
     type(async_lock_context).__aexit__ = __aexit__
 
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         ...
 
@@ -487,7 +487,7 @@ def test_async_no_event_loop_does_not_raise() -> None:
         else:
             pytest.fail()
 
-        @memoize
+        @atools.Memoize()
         async def foo() -> None:
             ...
     finally:
@@ -500,7 +500,7 @@ def test_memoizes_class() -> None:
     class Bar:
         ...
 
-    @memoize
+    @atools.Memoize()
     class Foo(Bar):
         def __init__(self, foo) -> None:
             body(foo)
@@ -516,7 +516,7 @@ def test_memoizes_class_with_metaclass() -> None:
     class FooMeta(type):
         pass
 
-    @memoize
+    @atools.Memoize()
     class Foo(metaclass=FooMeta):
         def __init__(self, foo) -> None:
             body(foo)
@@ -530,12 +530,12 @@ def test_reset_all_resets_class_decorators() -> None:
     foo_body = MagicMock()
     bar_body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     class Foo:
         def __init__(self) -> None:
             foo_body()
 
-    @memoize
+    @atools.Memoize()
     class Bar:
         def __init__(self) -> None:
             bar_body()
@@ -545,7 +545,7 @@ def test_reset_all_resets_class_decorators() -> None:
     Bar()
     bar_body.assert_called_once()
 
-    memoize.reset_all()
+    atools.Memoize.reset_all()
     foo_body.reset_mock()
     bar_body.reset_mock()
 
@@ -559,11 +559,11 @@ def test_reset_all_resets_function_decorators() -> None:
     foo_body = MagicMock()
     bar_body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         foo_body()
 
-    @memoize
+    @atools.Memoize()
     def bar() -> None:
         bar_body()
 
@@ -572,7 +572,7 @@ def test_reset_all_resets_function_decorators() -> None:
     bar()
     bar_body.assert_called_once()
 
-    memoize.reset_all()
+    atools.Memoize.reset_all()
     foo_body.reset_mock()
     bar_body.reset_mock()
 
@@ -587,7 +587,7 @@ async def test_async_herd_waits_for_return() -> None:
     foo_start_event = Event()
     foo_finish_event = Event()
 
-    @memoize
+    @atools.Memoize()
     async def foo() -> int:
         foo_start_event.set()
         await foo_finish_event.wait()
@@ -608,7 +608,7 @@ async def test_memoize_does_not_stop_object_cleanup() -> None:
     class Foo:
         pass
 
-    @memoize
+    @atools.Memoize()
     def foo(_: Foo) -> None:
         ...
 
@@ -624,7 +624,7 @@ async def test_memoize_does_not_stop_object_cleanup() -> None:
 
 def test_memoize_class_preserves_doc() -> None:
 
-    @memoize
+    @atools.Memoize()
     class Foo:
         """Foo doc"""
 
@@ -634,7 +634,7 @@ def test_memoize_class_preserves_doc() -> None:
 def test_keygen_overrides_default() -> None:
     body = MagicMock()
 
-    @memoize(keygen=lambda bar, baz: (bar,))
+    @atools.Memoize(keygen=lambda bar, baz: (bar,))
     def foo(bar: int, baz: int) -> int:
         body(bar, baz)
 
@@ -658,7 +658,7 @@ async def test_keygen_awaits_awaitable_parts() -> None:
 
     body = MagicMock()
 
-    @memoize(keygen=lambda bar, baz: (key_part(bar, baz),))
+    @atools.Memoize(keygen=lambda bar, baz: (key_part(bar, baz),))
     async def foo(bar: int, baz: int) -> int:
         body(bar, baz)
 
@@ -679,13 +679,13 @@ def test_db_creates_table_for_each_decorator(db_path: Path) -> None:
 
     assert get_table_len(db_path) == 0
 
-    @memoize(db_path=db_path)
+    @atools.Memoize(db_path=db_path)
     def foo() -> None:
         ...
 
     assert get_table_len(db_path) == 1
 
-    @memoize(db_path=db_path)
+    @atools.Memoize(db_path=db_path)
     def bar() -> None:
         ...
 
@@ -697,7 +697,7 @@ def test_db_reloads_values_from_disk(db_path: Path) -> None:
 
     def foo() -> None:
 
-        @memoize(db_path=db_path)
+        @atools.Memoize(db_path=db_path)
         def foo_inner() -> None:
             body()
 
@@ -713,7 +713,7 @@ def test_reset_removes_values_on_disk(db_path: Path) -> None:
     body = MagicMock()
 
     def foo() -> None:
-        @memoize(db_path=db_path)
+        @atools.Memoize(db_path=db_path)
         def foo_inner() -> None:
             body()
 
@@ -730,7 +730,7 @@ def test_db_expires_memo(db_path: Path, time: MagicMock) -> None:
     body = MagicMock()
 
     def foo() -> None:
-        @memoize(db_path=db_path, duration=timedelta(days=1))
+        @atools.Memoize(db_path=db_path, duration=timedelta(days=1))
         def foo_inner() -> None:
             body()
 
@@ -748,7 +748,7 @@ def test_db_memoizes_multiple_values(db_path: Path) -> None:
     body = MagicMock()
 
     def get_foo() -> Callable[[int], None]:
-        @memoize(db_path=db_path)
+        @atools.Memoize(db_path=db_path)
         def _foo(_i: int) -> None:
             body(_i)
 
@@ -767,7 +767,7 @@ def test_db_with_size_expires_lru(db_path: Path) -> None:
     body = MagicMock()
 
     def foo(it: Iterable[int]) -> None:
-        @memoize(db_path=db_path, size=5)
+        @atools.Memoize(db_path=db_path, size=5)
         def foo_inner(_i: int) -> None:
             body(_i)
 
@@ -787,7 +787,7 @@ def test_db_with_duration_expires_stale_values(
     body = MagicMock()
 
     def foo(it: Iterable[int]) -> None:
-        @memoize(db_path=db_path, duration=timedelta(hours=1))
+        @atools.Memoize(db_path=db_path, duration=timedelta(hours=1))
         def foo_inner(_i: int) -> None:
             body(_i)
 
@@ -811,7 +811,7 @@ def test_db_memoizes_frozenset(db_path: Path) -> None:
     body = MagicMock()
 
     def foo() -> FrozenSet[int]:
-        @memoize(db_path=db_path)
+        @atools.Memoize(db_path=db_path)
         def foo_inner() -> FrozenSet[int]:
             body()
             return frozenset({1, 2, 3})
@@ -828,7 +828,7 @@ def test_db_memoizes_frozenset(db_path: Path) -> None:
 def test_sync_remove_removes_one() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo(bar: int) -> None:
         body(bar)
 
@@ -845,7 +845,7 @@ def test_sync_remove_removes_one() -> None:
 def test_reset_call_before_expire_resets_one(time: MagicMock) -> None:
     body = MagicMock()
 
-    @memoize(duration=timedelta(days=1))
+    @atools.Memoize(duration=timedelta(days=1))
     def foo(bar: int) -> None:
         body(bar)
 
@@ -864,7 +864,7 @@ def test_reset_call_before_expire_resets_one(time: MagicMock) -> None:
 async def test_async_remove_removes_call() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     async def foo(bar: int) -> None:
         body(bar)
 
@@ -882,7 +882,7 @@ def test_reset_call_with_db_resets_call(db_path: Path) -> None:
     body = MagicMock()
 
     def get_foo() -> Callable[[int], None]:
-        @memoize(db_path=db_path)
+        @atools.Memoize(db_path=db_path)
         def foo(_i: int) -> None:
             body(_i)
 
@@ -907,7 +907,7 @@ async def test_async_keygen_can_return_non_tuple() -> None:
     def keygen() -> int:
         return 1
 
-    @memoize(keygen=lambda: keygen())
+    @atools.Memoize(keygen=lambda: keygen())
     async def foo() -> None:
         body()
 
@@ -918,7 +918,7 @@ async def test_async_keygen_can_return_non_tuple() -> None:
 
 def test_db_can_return_type_of_callers_globals(db_path: Path) -> None:
 
-    @memoize(db_path=db_path)
+    @atools.Memoize(db_path=db_path)
     def foo():
         return PosixPath.cwd()
 
@@ -928,7 +928,7 @@ def test_db_can_return_type_of_callers_globals(db_path: Path) -> None:
 
 def test_memoized_function_is_deletable() -> None:
     def get_foo() -> Callable[[], None]:
-        @memoize
+        @atools.Memoize()
         def _foo() -> None:
             ...
 
@@ -943,7 +943,7 @@ def test_memoized_function_is_deletable() -> None:
 
 
 def test_keygen_works_with_default_kwargs() -> None:
-    @memoize(keygen=lambda bar: bar)
+    @atools.Memoize(keygen=lambda bar: bar)
     def foo(bar=1) -> None:
         ...
 
@@ -955,7 +955,7 @@ def test_sync_memo_lifetime_is_lte_arg_with_default_object_hash() -> None:
     class Bar:
         ...
 
-    @memoize
+    @atools.Memoize()
     def foo(_bar: Bar) -> None:
         pass
 
@@ -973,7 +973,7 @@ async def test_async_memo_lifetime_is_lte_arg_with_default_object_hash() -> None
     class Bar:
         ...
 
-    @memoize
+    @atools.Memoize()
     async def foo(_bar: Bar) -> None:
         pass
 
@@ -990,7 +990,7 @@ def test_sync_memo_lifetime_is_lte_keygen_part_with_default_default_hash() -> No
     class Bar:
         ...
 
-    @memoize(keygen=lambda _bar: _bar)
+    @atools.Memoize(keygen=lambda _bar: _bar)
     def foo(_bar: Bar) -> None:
         pass
 
@@ -1007,7 +1007,7 @@ async def test_async_memo_lifetime_is_lte_keygen_part_with_default_default_hash(
     class Bar:
         ...
 
-    @memoize(keygen=lambda _bar: _bar)
+    @atools.Memoize(keygen=lambda _bar: _bar)
     async def foo(_bar: Bar) -> None:
         pass
 
@@ -1023,7 +1023,7 @@ def test_sync_memo_lifetime_not_affected_by_arg_with_non_default_hash() -> None:
         def __hash__(self) -> int:
             return hash('Bar')
 
-    @memoize
+    @atools.Memoize()
     def foo(_bar: Bar) -> None:
         pass
 
@@ -1040,7 +1040,7 @@ async def test_async_memo_lifetime_not_affected_by_arg_with_non_default_hash() -
         def __hash__(self) -> int:
             return hash('Bar')
 
-    @memoize
+    @atools.Memoize()
     async def foo(_bar: Bar) -> None:
         pass
 
@@ -1056,7 +1056,7 @@ def test_sync_memo_lifetime_lte_keygen_part_with_non_default_hash() -> None:
     class Bar:
         ...
 
-    @memoize(keygen=lambda _bar: '_bar')
+    @atools.Memoize(keygen=lambda _bar: '_bar')
     def foo(_bar: Bar) -> None:
         pass
 
@@ -1073,7 +1073,7 @@ async def test_async_memo_lifetime_lte_keygen_part_with_non_default_hash() -> No
     class Bar:
         ...
 
-    @memoize(keygen=lambda _bar: '_bar')
+    @atools.Memoize(keygen=lambda _bar: '_bar')
     async def foo(_bar: Bar) -> None:
         pass
 
@@ -1087,7 +1087,7 @@ async def test_async_memo_lifetime_lte_keygen_part_with_non_default_hash() -> No
 def test_sync_update_does_not_update_nonexistent_value() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         body()
 
@@ -1102,7 +1102,7 @@ def test_sync_update_does_not_update_nonexistent_value() -> None:
 async def test_async_update_does_not_update_nonexistent_value() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     async def foo() -> None:
         body()
 
@@ -1116,7 +1116,7 @@ async def test_async_update_does_not_update_nonexistent_value() -> None:
 def test_sync_update_updates_existing_value() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         body()
 
@@ -1132,7 +1132,7 @@ def test_sync_update_updates_existing_value() -> None:
 async def test_async_update_updates_existing_value() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     async def foo() -> None:
         body()
 
@@ -1147,7 +1147,7 @@ async def test_async_update_updates_existing_value() -> None:
 def test_sync_upsert_upserts_nonexistent_value() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         body()
 
@@ -1162,7 +1162,7 @@ def test_sync_upsert_upserts_nonexistent_value() -> None:
 async def test_async_upsert_upserts_nonexistent_value() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     async def foo() -> None:
         body()
 
@@ -1176,7 +1176,7 @@ async def test_async_upsert_upserts_nonexistent_value() -> None:
 def test_sync_upsert_upserts_existing_value() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     def foo() -> None:
         body()
 
@@ -1192,7 +1192,7 @@ def test_sync_upsert_upserts_existing_value() -> None:
 async def test_async_upsert_upserts_existing_value() -> None:
     body = MagicMock()
 
-    @memoize
+    @atools.Memoize()
     async def foo() -> None:
         body()
 
@@ -1207,7 +1207,7 @@ async def test_async_upsert_upserts_existing_value() -> None:
 def test_function_return_type_with_db_and_dill_does_not_raise(db_path: Path, dill: test_module.Pickler) -> None:
     foo_body = MagicMock()
 
-    @memoize(db_path=db_path, pickler=dill)
+    @atools.Memoize(db_path=db_path, pickler=dill)
     def foo() -> Callable[[], None]:
         foo_body()
 

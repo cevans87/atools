@@ -1,9 +1,9 @@
 from ._cli import CLI
-from ._memoize_decorator import memoize
+from ._memoize import Memoize
 from ._rate_decorator import rate
 
 __all__ = [
     'CLI',
-    'memoize',
+    'Memoize',
     'rate',
 ]

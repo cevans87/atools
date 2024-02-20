@@ -1,3 +1,4 @@
+import annotated_types
 import dataclasses
 import enum
 import logging
@@ -5,7 +6,6 @@ import shlex
 import types
 import typing
 
-import pydantic
 import pytest
 
 import atools
@@ -43,10 +43,10 @@ args = [*map(lambda _args: Arg(*_args), [
     ('None', types.NoneType, None, None),
     ('"()"', tuple[()], (), ()),
     ('"()"', typing.Tuple[()], (), ()),
+    ('"(1,)"', tuple[int], (0,), (1,)),
     ('"[1, 2, 3, 4]"', list[int], [], [1, 2, 3, 4]),
     ('"[1, 2, 3, 4]"', typing.List[int], [], [1, 2, 3, 4]),
     ('"(3.14, \'Hi!\', \'Bye!\')"', tuple[float, str, ...], (0.0, 'Meh!'), (3.14, 'Hi!', 'Bye!')),
-    ('"(\'Hi!\', \'Bye!\')"', tuple[str, ...], ('Meh!',), ('Hi!', 'Bye!')),
     ('42', int | float | bool | str | None, 0, 42),
     ('3.14', int | float | bool | str | None, 0.0, 3.14),
     ('True', int | float | bool | str | None, False, True),
@@ -291,29 +291,72 @@ def test_annotation_log_level_of_logger_sets_choices() -> None:
 
 def test_annotation_log_level_of_logger_sets_log_level() -> None:
     logger = logging.getLogger('test_annotation_log_level_of_logger_sets_log_level')
-    logger.setLevel(logging.ERROR)
+    logger.setLevel(logging.NOTSET)
 
     @atools.CLI()
     def entrypoint(
-        foo: atools.CLI.Annotated.log_level(logger) = 'DEBUG',
+        foo: atools.CLI.Annotated.log_level(logger) = 'NOTSET',
     ) -> dict[str, atools.CLI.Annotated.LogLevel]:
         return locals()
 
-    assert logger.level == logging.ERROR
+    assert logger.level == logging.NOTSET
+
+    assert entrypoint.cli.run(shlex.split('--foo CRITICAL')) == {'foo': 'CRITICAL'}
+    assert logger.level == logging.CRITICAL
 
     assert entrypoint.cli.run(shlex.split('--foo INFO')) == {'foo': 'INFO'}
     assert logger.level == logging.INFO
 
-    assert entrypoint.cli.run(shlex.split('')) == {'foo': 'DEBUG'}
-    assert logger.level == logging.DEBUG
+    assert entrypoint.cli.run(shlex.split('')) == {'foo': 'NOTSET'}
+    assert logger.level == logging.NOTSET
+
+
+def test_annotation_log_level_of_name_sets_log_level() -> None:
+    logger = logging.getLogger('test_annotation_log_level_of_name_sets_log_level')
+    logger.setLevel(logging.NOTSET)
+
+    @atools.CLI()
+    def entrypoint(
+        foo: atools.CLI.Annotated.log_level('test_annotation_log_level_of_name_sets_log_level') = 'NOTSET',
+    ) -> dict[str, atools.CLI.Annotated.LogLevel]:
+        return locals()
+
+    assert logger.level == logging.NOTSET
+
+    assert entrypoint.cli.run(shlex.split('--foo CRITICAL')) == {'foo': 'CRITICAL'}
+    assert logger.level == logging.CRITICAL
+
+    assert entrypoint.cli.run(shlex.split('--foo INFO')) == {'foo': 'INFO'}
+    assert logger.level == logging.INFO
+
+    assert entrypoint.cli.run(shlex.split('')) == {'foo': 'NOTSET'}
+    assert logger.level == logging.NOTSET
+
+
+def test_annotation_verbose_sets_log_level() -> None:
+    logger = logging.getLogger('test_annotation_verbose_sets_log_level')
+    logger.setLevel(logging.NOTSET)
+
+    @atools.CLI()
+    def entrypoint(
+        verbose: atools.CLI.Annotated.verbose(logger) = logging.NOTSET,
+    ) -> dict[str, atools.CLI.Annotated.LogLevel]:
+        return locals()
+
+    assert logger.level == logging.NOTSET
+    assert entrypoint.cli.run(shlex.split('')) == {'verbose': logging.NOTSET}
+    assert logger.level == logging.NOTSET
+    assert entrypoint.cli.run(shlex.split('-v')) == {'verbose': logging.CRITICAL}
+    assert logger.level == logging.CRITICAL
 
 
 def test_annotation_with_count_action_counts() -> None:
     @atools.CLI()
     def entrypoint(
         foo: typing.Annotated[
-            pydantic.NonNegativeInt,
-            atools.CLI.AddArgument[pydantic.NonNegativeInt](name_or_flags=['-f', '--foo'], action='count'),
+            int,
+            annotated_types.Ge(0),
+            atools.CLI.AddArgument[int](name_or_flags=['-f', '--foo'], action='count'),
         ] = 0,
     ) -> dict[str, int]:
         return locals()
@@ -328,8 +371,7 @@ def test_annotation_with_count_action_counts() -> None:
 def test_enum_help_text_shows_choices() -> None:
 
     @atools.CLI()
-    def entrypoint(foo: FooEnum) -> dict[str, FooEnum]:
-        return locals()
+    def entrypoint(foo: FooEnum) -> dict[str, FooEnum]: ...
 
     assert '(\'a\', \'b\', \'c\')' in entrypoint.cli.parser.format_help()
 
@@ -337,8 +379,7 @@ def test_enum_help_text_shows_choices() -> None:
 def test_literal_help_text_shows_choices() -> None:
 
     @atools.CLI()
-    def entrypoint(foo: typing.Literal[1, 2, 3]) -> dict[str, typing.Literal[1, 2, 3]]:
-        return locals()
+    def entrypoint(foo: typing.Literal[1, 2, 3]) -> dict[str, typing.Literal[1, 2, 3]]: ...
 
     assert '(\'1\', \'2\', \'3\')' in entrypoint.cli.parser.format_help()
 
@@ -377,8 +418,7 @@ def test_cli_names_enforce_subcommand_structure() -> None:
 
     for name in ['foo.baz', 'foo.qux', 'bar.quux', 'bar.corge']:
         @atools.CLI(name)
-        def entrypoint(foo: int) -> dict[str, object]:
-            return locals()
+        def entrypoint() -> dict[str, object]: ...
 
     assert 'baz' in atools.CLI('foo').parser.format_help()
     assert 'qux' in atools.CLI('foo').parser.format_help()

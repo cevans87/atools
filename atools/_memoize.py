@@ -1,84 +1,84 @@
-from abc import ABC
-from asyncio import Lock as AsyncLock
-from collections import ChainMap, OrderedDict
-from dataclasses import dataclass, field
-from datetime import timedelta
-from functools import partial, wraps
-from hashlib import sha256
+import abc
+import annotated_types
+import asyncio
+import collections
+import dataclasses
+import datetime
+import functools
+import hashlib
 import inspect
-from pathlib import Path
+import pathlib
 import pickle
-from sqlite3 import connect, Connection
-from textwrap import dedent
-from time import time
-from threading import Lock as SyncLock
-from typing import Any, Callable, Hashable, Mapping, Optional, Tuple, Type, Union
-from weakref import finalize, WeakSet
+import re
+import sqlite3
+import textwrap
+import time
+import threading
+import typing
+import weakref
 
 
-Decoratee = Union[Callable, Type]
-Keygen = Callable[..., Any]
+Keygen = typing.Callable[..., object]
+_Name = typing.Annotated[str, annotated_types.Predicate(lambda name: re.match(r'^[.a-z]*$', name) is not None)]
 
 
-class Pickler(ABC):
-
-    @staticmethod
-    def dumps(_str: str) -> str:
-        ...  # pragma: no cover
+class Pickler(abc.ABC):
 
     @staticmethod
-    def loads(_bytes: bytes) -> Any:
-        ...  # pragma: no cover
+    def dumps(_str: str) -> str: ...
+
+    @staticmethod
+    def loads(_bytes: bytes) -> object: ...
 
 
 class _MemoZeroValue:
-    pass
+    ...
 
 
-@dataclass
+@dataclasses.dataclass
 class _MemoReturnState:
     called: bool = False
     raised: bool = False
-    value: Any = _MemoZeroValue
+    value: object = _MemoZeroValue
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class _MemoBase:
-    t0: Optional[float]
-    memo_return_state: _MemoReturnState = field(init=False, default_factory=_MemoReturnState)
+    t0: float | None
+    memo_return_state: _MemoReturnState = dataclasses.field(init=False, default_factory=_MemoReturnState)
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class _AsyncMemo(_MemoBase):
-    async_lock: AsyncLock = field(init=False, default_factory=lambda: AsyncLock())
+    async_lock: asyncio.Lock = dataclasses.field(init=False, default_factory=lambda: asyncio.Lock())
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class _SyncMemo(_MemoBase):
-    sync_lock: SyncLock = field(init=False, default_factory=lambda: SyncLock())
+    sync_lock: threading.Lock = dataclasses.field(init=False, default_factory=lambda: threading.Lock())
 
 
-_Memo = Union[_AsyncMemo, _SyncMemo]
+_Memo = _AsyncMemo | _SyncMemo
 
 
-@dataclass(frozen=True)
-class _MemoizeBase:
-    db: Optional[Connection]
-    default_kwargs: Mapping[str, Any]
-    duration: Optional[timedelta]
-    fn: Callable
-    keygen: Optional[Keygen]
-    pickler: Pickler = field(hash=False)
-    size: Optional[int]
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _MemoizeBase[** Params, Return]:
+    db: sqlite3.Connection | None
+    default_kwargs: dict[str, object]
+    duration: datetime.timedelta | None
+    fn: typing.Callable
+    keygen: Keygen | None
+    pickler: Pickler = dataclasses.field(hash=False)
+    size: int | None
 
-    expire_order: OrderedDict = field(init=False, default_factory=OrderedDict, hash=False)
-    memos: OrderedDict = field(init=False, default_factory=OrderedDict, hash=False)
+    expire_order: collections.OrderedDict = dataclasses.field(init=False, default_factory=collections.OrderedDict, hash=False)
+    memos: collections.OrderedDict = dataclasses.field(init=False, default_factory=collections.OrderedDict, hash=False)
 
     def __post_init__(self) -> None:
         if self.db is not None:
             self.db.isolation_level = None
 
-            self.db.execute(dedent(f'''
+            self.db.execute(textwrap.dedent(f'''
                 CREATE TABLE IF NOT EXISTS `{self.table_name}` (
                   k TEXT PRIMARY KEY,
                   t0 FLOAT,
@@ -87,9 +87,9 @@ class _MemoizeBase:
                 )
             '''))
             if self.duration:
-                self.db.execute(dedent(f'''
+                self.db.execute(textwrap.dedent(f'''
                     DELETE FROM `{self.table_name}`
-                    WHERE t0 < {time() - self.duration.total_seconds()}
+                    WHERE t0 < {time.time() - self.duration.total_seconds()}
                 '''))
 
             if self.size:
@@ -124,26 +124,26 @@ class _MemoizeBase:
             f':{self.fn.__code__.co_firstlineno}'
         )
 
-    def bind_key_lifetime(self, raw_key: Tuple[Any, ...], key: Union[int, str]) -> None:
+    def bind_key_lifetime(self, raw_key: typing.Tuple[object, ...], key: int | str) -> None:
         for raw_key_part in raw_key:
             if (raw_key_part is not None) and (type(raw_key_part).__hash__ is object.__hash__):
-                finalize(raw_key_part, self.reset_key, key)
+                weakref.finalize(raw_key_part, self.reset_key, key)
 
-    def default_keygen(self, *args, **kwargs) -> Tuple[Hashable, ...]:
+    def default_keygen(self, *args, **kwargs) -> typing.Tuple[typing.Hashable, ...]:
         """Returns all params (args, kwargs, and missing default kwargs) for function as kwargs."""
 
         return tuple(self.get_args_as_kwargs(*args, **kwargs).values())
 
-    def get_args_as_kwargs(self, *args, **kwargs) -> Mapping[str, Any]:
+    def get_args_as_kwargs(self, *args, **kwargs) -> collections.ChainMap[str, object]:
         args_as_kwargs = {}
         for k, v in zip(self.default_kwargs, args):
             args_as_kwargs[k] = v
-        return ChainMap(args_as_kwargs, kwargs, self.default_kwargs)
+        return collections.ChainMap(args_as_kwargs, kwargs, self.default_kwargs)
 
-    def get_memo(self, key: Union[int, str], insert: bool) -> Optional[_Memo]:
+    def get_memo(self, key: int | str, insert: bool) -> _Memo | None:
         try:
             memo = self.memos[key] = self.memos.pop(key)
-            if self.duration is not None and memo.t0 < time() - self.duration.total_seconds():
+            if self.duration is not None and memo.t0 < time.time() - self.duration.total_seconds():
                 self.expire_order.pop(key)
                 raise ValueError('value expired')
         except (KeyError, ValueError):
@@ -152,7 +152,7 @@ class _MemoizeBase:
             elif self.duration is None:
                 t0 = None
             else:
-                t0 = time()
+                t0 = time.time()
                 # The value has no significance. We're using the dict entirely for ordering keys.
                 self.expire_order[key] = ...
 
@@ -167,7 +167,7 @@ class _MemoizeBase:
                 (len(self.expire_order) > 0) and
                 (
                         self.memos[next(iter(self.expire_order))].t0 <
-                        time() - self.duration.total_seconds()
+                        time.time() - self.duration.total_seconds()
                 )
         ):
             (k, _) = self.expire_order.popitem(last=False)
@@ -179,13 +179,13 @@ class _MemoizeBase:
         if (self.db is not None) and (k is not None):
             self.db.execute(f"DELETE FROM `{self.table_name}` WHERE k = '{k}'")
 
-    def finalize_memo(self, memo: _Memo, key: Union[int, str]) -> Any:
+    def finalize_memo(self, memo: _Memo, key: int | str) -> object:
         if memo.memo_return_state.raised:
             raise memo.memo_return_state.value
         elif (self.db is not None) and (self.memos[key] is memo):
             value = self.pickler.dumps(memo.memo_return_state.value)
             self.db.execute(
-                dedent(f'''
+                textwrap.dedent(f'''
                     INSERT OR REPLACE INTO `{self.table_name}`
                     (k, t0, t, v)
                     VALUES
@@ -194,31 +194,31 @@ class _MemoizeBase:
                 (
                     key,
                     memo.t0,
-                    time(),
+                    time.time(),
                     value
                 )
             )
         return memo.memo_return_state.value
 
-    def get_key(self, raw_key: Tuple[Hashable, ...]) -> Union[int, str]:
+    def get_key(self, raw_key: typing.Tuple[typing.Hashable, ...]) -> int | str:
         if self.db is None:
             key = hash(raw_key)
         else:
-            key = sha256(str(raw_key).encode()).hexdigest()
+            key = hashlib.sha256(str(raw_key).encode()).hexdigest()
 
         return key
 
     @staticmethod
-    def make_memo(t0: Optional[float]) -> _Memo:  # pragma: no cover
+    def make_memo(t0: float | None) -> _Memo:  # pragma: no cover
         raise NotImplemented
 
     def reset(self) -> None:
-        object.__setattr__(self, 'expire_order', OrderedDict())
-        object.__setattr__(self, 'memos', OrderedDict())
+        object.__setattr__(self, 'expire_order', collections.OrderedDict())
+        object.__setattr__(self, 'memos', collections.OrderedDict())
         if self.db is not None:
             self.db.execute(f"DELETE FROM `{self.table_name}`")
 
-    def reset_key(self, key: Union[int, str]) -> None:
+    def reset_key(self, key: int | str) -> None:
         if key in self.memos:
             self.memos.pop(key)
             if self.duration is not None:
@@ -227,10 +227,10 @@ class _MemoizeBase:
                 self.db.execute(f"DELETE FROM `{self.table_name}` WHERE k == '{key}'")
 
 
-@dataclass(frozen=True)
-class _AsyncMemoize(_MemoizeBase):
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _AsyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
 
-    async def get_raw_key(self, *args, **kwargs) -> Tuple[Hashable, ...]:
+    async def get_raw_key(self, *args, **kwargs) -> typing.Tuple[typing.Hashable, ...]:
         if self.keygen is None:
             raw_key = self.default_keygen(*args, **kwargs)
         else:
@@ -247,11 +247,11 @@ class _AsyncMemoize(_MemoizeBase):
 
         return raw_key
 
-    def get_behavior(self, *, insert: bool, update: bool) -> Callable:
-        def get_call(*, fn: Callable) -> Callable:
+    def get_behavior(self, *, insert: bool, update: bool) -> typing.Callable:
+        def get_call(*, fn: typing.Callable) -> typing.Callable:
 
-            @wraps(self.fn)
-            async def call(*args, **kwargs) -> Any:
+            @functools.wraps(self.fn)
+            async def call(*args, **kwargs) -> object:
                 raw_key = await self.get_raw_key(*args, **kwargs)
                 key = self.get_key(raw_key)
 
@@ -280,23 +280,23 @@ class _AsyncMemoize(_MemoizeBase):
             return call
         return get_call
 
-    async def insert(self, *args, **kwargs) -> Any:
+    async def insert(self, *args, **kwargs) -> object:
         return await self.get_behavior(insert=True, update=False)(fn=self.fn)(*args, **kwargs)
 
-    def update(self, *args, **kwargs) -> Callable:
+    def update(self, *args, **kwargs) -> typing.Callable:
 
-        async def to(value: Any) -> Any:
-            async def fn(*_args, **_kwargs) -> Any:
+        async def to(value: object) -> object:
+            async def fn(*_args, **_kwargs) -> object:
                 return value
 
             return await self.get_behavior(insert=False, update=True)(fn=fn)(*args, **kwargs)
 
         return to
 
-    def upsert(self, *args, **kwargs) -> Callable:
+    def upsert(self, *args, **kwargs) -> typing.Callable:
 
-        async def to(value: Any) -> Any:
-            async def fn(*_args, **_kwargs) -> Any:
+        async def to(value: object) -> object:
+            async def fn(*_args, **_kwargs) -> object:
                 return value
 
             return await self.get_behavior(insert=True, update=True)(fn=fn)(*args, **kwargs)
@@ -308,9 +308,9 @@ class _AsyncMemoize(_MemoizeBase):
         key = self.get_key(raw_key)
         self.reset_key(key)
 
-    def get_decorator(self) -> Callable:
+    def get_decorator(self) -> typing.Callable:
 
-        async def decorator(*args, **kwargs) -> Any:
+        async def decorator(*args, **kwargs) -> object:
             return await self.insert(*args, **kwargs)
 
         decorator.memoize = self
@@ -318,16 +318,16 @@ class _AsyncMemoize(_MemoizeBase):
         return decorator
 
     @staticmethod
-    def make_memo(t0: Optional[float]) -> _AsyncMemo:
+    def make_memo(t0: float | None) -> _AsyncMemo:
         return _AsyncMemo(t0=t0)
 
 
-@dataclass(frozen=True)
-class _SyncMemoize(_MemoizeBase):
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _SyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
 
-    _sync_lock: SyncLock = field(init=False, default_factory=lambda: SyncLock())
+    _sync_lock: threading.Lock = dataclasses.field(init=False, default_factory=lambda: threading.Lock())
 
-    def get_raw_key(self, *args, **kwargs) -> Tuple[Hashable, ...]:
+    def get_raw_key(self, *args, **kwargs) -> typing.Tuple[typing.Hashable, ...]:
         if self.keygen is None:
             raw_key = self.default_keygen(*args, **kwargs)
         else:
@@ -338,11 +338,11 @@ class _SyncMemoize(_MemoizeBase):
 
         return raw_key
 
-    def get_behavior(self, *, insert: bool, update: bool) -> Callable:
-        def get_call(*, fn: Callable) -> Callable:
+    def get_behavior(self, *, insert: bool, update: bool) -> typing.Callable:
+        def get_call(*, fn: typing.Callable) -> typing.Callable:
 
-            @wraps(self.fn)
-            def call(*args, **kwargs) -> Any:
+            @functools.wraps(self.fn)
+            def call(*args, **kwargs) -> object:
                 raw_key = self.get_raw_key(*args, **kwargs)
                 key = self.get_key(raw_key)
 
@@ -373,23 +373,23 @@ class _SyncMemoize(_MemoizeBase):
 
         return get_call
 
-    def insert(self, *args, **kwargs) -> Any:
+    def insert(self, *args, **kwargs) -> object:
         return self.get_behavior(insert=True, update=False)(fn=self.fn)(*args, **kwargs)
 
-    def update(self, *args, **kwargs) -> Callable:
+    def update(self, *args, **kwargs) -> typing.Callable:
 
-        def to(value: Any) -> Any:
-            def fn(*_args, **_kwargs) -> Any:
+        def to(value: object) -> object:
+            def fn(*_args, **_kwargs) -> object:
                 return value
 
             return self.get_behavior(insert=False, update=True)(fn=fn)(*args, **kwargs)
 
         return to
 
-    def upsert(self, *args, **kwargs) -> Callable:
+    def upsert(self, *args, **kwargs) -> typing.Callable:
 
-        def to(value: Any) -> Any:
-            def fn(*_args, **_kwargs) -> Any:
+        def to(value: object) -> object:
+            def fn(*_args, **_kwargs) -> object:
                 return value
 
             return self.get_behavior(insert=True, update=True)(fn=fn)(*args, **kwargs)
@@ -401,9 +401,9 @@ class _SyncMemoize(_MemoizeBase):
         key = self.get_key(raw_key)
         self.reset_key(key)
 
-    def get_decorator(self) -> Callable:
+    def get_decorator(self) -> typing.Callable:
 
-        def decorator(*args, **kwargs) -> Any:
+        def decorator(*args, **kwargs) -> object:
             return self.insert(*args, **kwargs)
 
         decorator.memoize = self
@@ -411,19 +411,32 @@ class _SyncMemoize(_MemoizeBase):
         return decorator
 
     @staticmethod
-    def make_memo(t0: Optional[float]) -> _SyncMemo:
+    def make_memo(t0: float | None) -> _SyncMemo:
         return _SyncMemo(t0=t0)
 
     def reset(self) -> None:
         with self._sync_lock:
             super().reset()
 
-    def reset_key(self, key: Union[int, str]) -> None:
+    def reset_key(self, key: int | str) -> None:
         with self._sync_lock:
             super().reset_key(key)
 
 
-class _Memoize:
+type _Decoration[**Params, Return] = _AsyncDecoration[Params, Return] | _SyncDecoration[Params, Return]
+
+
+class _Decoratee[** Params, Return](typing.Protocol):
+    __call__: typing.Callable[Params, Return]
+
+
+class _Decorated[** Params, Return](typing.Protocol):
+    __call__: typing.Callable[Params, Return]
+    memoize: _Decoration[Params, Return]
+
+
+@dataclasses.dataclass(frozen=True, init=False)
+class _Decorator:
     """Decorates a function call and caches return value for given inputs.
     - If `db_path` is provided, memos will persist on disk and reloaded during initialization.
     - If `duration` is provided, memos will only be valid for given `duration`.
@@ -436,7 +449,7 @@ class _Memoize:
     - Body will run once for unique input `bar` and result is cached.
         ```python3
         @memoize
-        def foo(bar) -> Any: ...
+        def foo(bar) -> object: ...
 
         foo(1)  # Function actually called. Result cached.
         foo(1)  # Function not called. Cached result returned.
@@ -446,7 +459,7 @@ class _Memoize:
     - Same as above, but async.
         ```python3
         @memoize
-        async def foo(bar) -> Any: ...
+        async def foo(bar) -> object: ...
 
         # Concurrent calls from the same event loop are safe. Only one call is generated. The
         # other nine calls in this example wait for the result.
@@ -473,7 +486,7 @@ class _Memoize:
     - Only 2 items are cached. Acts as an LRU.
         ```python3
         @memoize(size=2)
-        def foo(bar) -> Any: ...
+        def foo(bar) -> object: ...
 
         foo(1)  # LRU cache order [foo(1)]
         foo(2)  # LRU cache order [foo(1), foo(2)]
@@ -484,7 +497,7 @@ class _Memoize:
     - Items are evicted after 1 minute.
         ```python3
         @memoize(duration=datetime.timedelta(minutes=1))
-        def foo(bar) -> Any: ...
+        def foo(bar) -> object: ...
 
         foo(1)  # Function actually called. Result cached.
         foo(1)  # Function not called. Cached result returned.
@@ -495,7 +508,7 @@ class _Memoize:
     - Memoize can be explicitly reset through the function's `.memoize` attribute
         ```python3
         @memoize
-        def foo(bar) -> Any: ...
+        def foo(bar) -> object: ...
 
         foo(1)  # Function actually called. Result cached.
         foo(1)  # Function not called. Cached result returned.
@@ -506,7 +519,7 @@ class _Memoize:
     - Current cache length can be accessed through the function's `.memoize` attribute
         ```python3
         @memoize
-        def foo(bar) -> Any: ...
+        def foo(bar) -> object: ...
 
         foo(1)
         foo(2)
@@ -517,7 +530,7 @@ class _Memoize:
         ```python3
         Class Foo:
             @memoize(keygen=lambda self, a, b, c: (a, b, c))  # Omit 'self' from hash key.
-            def bar(self, a, b, c) -> Any: ...
+            def bar(self, a, b, c) -> object: ...
 
         a, b = Foo(), Foo()
 
@@ -531,10 +544,10 @@ class _Memoize:
 
     - If part of the returned key from keygen is awaitable, it will be awaited.
         ```python3
-        async def awaitable_key_part() -> Hashable: ...
+        async def awaitable_key_part() -> typing.Hashable: ...
 
         @memoize(keygen=lambda bar: (bar, awaitable_key_part()))
-        async def foo(bar) -> Any: ...
+        async def foo(bar) -> object: ...
         ```
 
     - If the memoized function is async and any part of the key is awaitable, it is awaited.
@@ -542,7 +555,7 @@ class _Memoize:
         async def morph_a(a: int) -> int: ...
 
         @memoize(keygen=lambda a, b, c: (morph_a(a), b, c))
-        def foo(a, b, c) -> Any: ...
+        def foo(a, b, c) -> object: ...
         ```
 
     - Properties can be memoized.
@@ -550,7 +563,7 @@ class _Memoize:
         Class Foo:
             @property
             @memoize
-            def bar(self) -> Any: ...
+            def bar(self) -> object: ...
 
         a = Foo()
         a.bar  # Function actually called. Result cached.
@@ -565,7 +578,7 @@ class _Memoize:
         ```python3
         Class Foo:
             @memoize(size=1)
-            def bar(self, baz) -> Any: ...
+            def bar(self, baz) -> object: ...
 
         a, b = Foo(), Foo()
         a.bar(1)  # LRU cache order [Foo.bar(a, 1)]
@@ -575,8 +588,8 @@ class _Memoize:
 
     - Values can persist to disk and be reloaded when memoize is initialized again.
         ```python3
-        @memoize(db_path=Path.home() / '.memoize')
-        def foo(a) -> Any: ...
+        @memoize(db_path=pathlib.Path.home() / '.memoize')
+        def foo(a) -> object: ...
 
         foo(1)  # Function actually called. Result cached.
 
@@ -587,13 +600,13 @@ class _Memoize:
 
     - If not applied to a function, calling the decorator returns a partial application.
         ```python3
-        memoize_db = memoize(db_path=Path.home() / '.memoize')
+        memoize_db = memoize(db_path=pathlib.Path.home() / '.memoize')
 
         @memoize_db(size=1)
-        def foo(a) -> Any: ...
+        def foo(a) -> object: ...
 
         @memoize_db(duration=datetime.timedelta(hours=1))
-        def bar(b) -> Any: ...
+        def bar(b) -> object: ...
         ```
 
     - Comparison equality does not affect memoize. Only hash equality matters.
@@ -605,7 +618,7 @@ class _Memoize:
                 return True
 
         @memoize
-        def bar(foo: Foo) -> Any: ...
+        def bar(foo: Foo) -> object: ...
 
         foo0, foo1 = Foo(), Foo()
         assert foo0 == foo1
@@ -628,7 +641,7 @@ class _Memoize:
             ...
 
         @memoize
-        def bar(foo: Foo) -> Any: ...
+        def bar(foo: Foo) -> object: ...
 
         bar(Foo())  # Memo is immediately deleted since Foo() is garbage collected.
 
@@ -640,7 +653,7 @@ class _Memoize:
     - Types that have specific, consistent hash functions (int, str, etc.) won't cause problems.
         ```python3
         @memoize
-        def foo(a: int, b: str, c: Tuple[int, ...], d: range) -> Any: ...
+        def foo(a: int, b: str, c: Tuple[int, ...], d: range) -> object: ...
 
         foo(1, 'bar', (1, 2, 3), range(42))  # Function called. Result cached.
         foo(1, 'bar', (1, 2, 3), range(42))  # Function not called. Cached result returned.
@@ -653,7 +666,7 @@ class _Memoize:
         class Foo:
           @classmethod
           @memoize
-          def bar(cls) -> Any: ...
+          def bar(cls) -> object: ...
 
         foo = Foo()
         foo.bar()  # Function called. Result cached.
@@ -672,7 +685,7 @@ class _Memoize:
         class Foo:
 
             @memoize
-            def bar(self) -> Any: ...
+            def bar(self) -> object: ...
 
         foo = Foo()
         foo.bar()  # Function called. Result cached.
@@ -687,74 +700,74 @@ class _Memoize:
         import dill
 
         @memoize(db_path='~/.memoize`, pickler=dill)
-        def foo() -> Callable[[], None]:
+        def foo() -> typing.Callable[[], None]:
             return lambda: None
         ```
     """
 
-    _all_decorators = WeakSet()
+    name: _Name = ...
+    db_path: pathlib.Path | None = None
+    duration: int | float | datetime.timedelta | None = None
+    keygen: Keygen | None = None
+    pickler: Pickler | None = None
+    size: int | None = None
 
-    @staticmethod
-    def __call__(
-            _decoratee: Optional[Decoratee] = None,
-            *,
-            db_path: Optional[Path] = None,
-            duration: Optional[Union[int, float, timedelta]] = None,
-            keygen: Optional[Keygen] = None,
-            pickler: Optional[Pickler] = None,
-            size: Optional[int] = None,
-    ) -> Union[Decoratee]:
-        if _decoratee is None:
-            return partial(memoize, db_path=db_path, duration=duration, keygen=keygen, pickler=pickler, size=size)
+    _all_decorators: typing.ClassVar[weakref.WeakSet] = weakref.WeakSet()
 
-        if inspect.isclass(_decoratee):
-            assert db_path is None, 'Class memoization not allowed with db.'
+    def __init__(
+        self,
+        name: _Name = ...,
+        /,
+        *,
+        db_path: pathlib.Path | None = None,
+        duration: int | float | datetime.timedelta | None = None,
+        keygen: Keygen | None = None,
+        pickler: Pickler | None = None,
+        size: int | None = None
+    ) -> None:
+        object.__setattr__(self, 'name', name if name is ... else '.'.join(filter(
+            lambda name_part: re.match(r'<.+>', name_part) is None, name.split('.')
+        )))
+        object.__setattr__(self, 'db_path', db_path)
+        object.__setattr__(self, 'duration', duration)
+        object.__setattr__(self, 'keygen', keygen)
+        object.__setattr__(self, 'pickler', pickler)
+        object.__setattr__(self, 'size', size)
 
-            class WrappedMeta(type(_decoratee)):
-                # noinspection PyMethodParameters
-                @memoize(duration=duration, size=size)
-                def __call__(cls, *args, **kwargs):
-                    return super().__call__(*args, **kwargs)
-
-            class Wrapped(_decoratee, metaclass=WrappedMeta):
-                pass
-
-            return type(_decoratee.__name__, (Wrapped,), {'__doc__': _decoratee.__doc__})
-
-        db = connect(f'{db_path}') if db_path is not None else None
-        duration = timedelta(seconds=duration) if isinstance(duration, (int, float)) else duration
+    def __call__[** Params, Return](self, decoratee: _Decoratee[Params, Return], /) -> _Decorated[Params, Return]:
+        db = sqlite3.connect(f'{self.db_path}') if self.db_path is not None else None
+        duration = datetime.timedelta(seconds=self.duration) if isinstance(self.duration, (int, float)) else self.duration
         assert (duration is None) or (duration.total_seconds() > 0)
-        pickler = pickle if pickler is None else pickler
-        assert (size is None) or (size > 0)
-        fn = _decoratee
-        default_kwargs: Mapping[str, Any] = {
-            k: v.default for k, v in inspect.signature(fn).parameters.items()
+        pickler = pickle if self.pickler is None else self.pickler
+        assert (self.size is None) or (self.size > 0)
+        default_kwargs: dict[str, object] = {
+            k: v.default for k, v in inspect.signature(decoratee).parameters.items()
         }
 
-        if inspect.iscoroutinefunction(_decoratee):
-            decorator_cls = _AsyncMemoize
+        if inspect.iscoroutinefunction(decoratee):
+            decoration_cls = _AsyncDecoration
         else:
-            decorator_cls = _SyncMemoize
+            decoration_cls = _SyncDecoration
 
         # noinspection PyArgumentList
-        decorator = decorator_cls(
+        decorator = decoration_cls(
             db=db,
             default_kwargs=default_kwargs,
             duration=duration,
-            fn=fn,
-            keygen=keygen,
+            fn=decoratee,
+            keygen=self.keygen,
             pickler=pickler,
-            size=size,
+            size=self.size,
         ).get_decorator()
 
-        _Memoize._all_decorators.add(decorator)
+        self._all_decorators.add(decorator)
 
-        return wraps(_decoratee)(decorator)
+        return functools.wraps(decoratee)(decorator)
 
-    @staticmethod
-    def reset_all() -> None:
-        for decorator in _Memoize._all_decorators:
+    @classmethod
+    def reset_all(cls) -> None:
+        for decorator in cls._all_decorators:
             decorator.memoize.reset()
 
 
-memoize = _Memoize()
+Memoize = _Decorator
