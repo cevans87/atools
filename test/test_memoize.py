@@ -4,6 +4,7 @@ from asyncio import (
 import atools
 import atools._memoize as test_module
 from datetime import timedelta
+import dill
 from pathlib import Path, PosixPath
 import pytest
 from sqlite3 import connect
@@ -29,13 +30,6 @@ def async_lock() -> MagicMock:
 def db_path() -> Path:
     with NamedTemporaryFile() as f:
         yield Path(f.name)
-
-
-@pytest.fixture
-def dill() -> test_module.Pickler:
-    import dill
-    yield dill
-    del dill
 
 
 @pytest.fixture
@@ -1204,10 +1198,10 @@ async def test_async_upsert_upserts_existing_value() -> None:
     assert await foo() == 1
 
 
-def test_function_return_type_with_db_and_dill_does_not_raise(db_path: Path, dill: test_module.Pickler) -> None:
+def test_function_return_type_with_db_and_dill_does_not_raise(db_path: Path) -> None:
     foo_body = MagicMock()
 
-    @atools.Memoize(db_path=db_path, pickler=dill)
+    @atools.Memoize(db_path=db_path, serializer=dill)
     def foo() -> Callable[[], None]:
         foo_body()
 

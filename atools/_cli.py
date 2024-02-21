@@ -59,8 +59,8 @@ import types
 import typing
 import sys
 
-
-_Name = typing.Annotated[str, annotated_types.Predicate(lambda name: re.match(r'^[.a-z]*$', name) is not None)]
+from ._key import Key
+from ._register import Register
 
 
 class _Exception(Exception):
@@ -271,35 +271,69 @@ class _SideEffect[T]:
         object.__setattr__(self, '_side_effect', _side_effect)
 
 
-_LogLevel = typing.Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'NOTSET']
-_Verbose = typing.Annotated[int, annotated_types.Interval(ge=0, lt=6)]
+_LogLevelInt = typing.Annotated[int, annotated_types.Interval(ge=10, le=60)]
+_LogLevelStr = typing.Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'NOTSET']
+_LogLevel = _LogLevelInt | _LogLevelStr
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class _Annotated:
 
+    LogLevelStr: typing.ClassVar[type[_LogLevelStr]] = _LogLevelStr
+    LogLevelInt: typing.ClassVar[type[_LogLevelInt]] = _LogLevelInt
     LogLevel: typing.ClassVar[type[_LogLevel]] = _LogLevel
-    Verbose: typing.ClassVar[type[_Verbose]] = _Verbose
 
     @staticmethod
-    def verbose(logger_or_name: logging.Logger | str, /) -> type[_Verbose]:
+    def quiet(logger_or_name: logging.Logger | str, /) -> type[_LogLevelInt]:
         logger = logger_or_name if isinstance(logger_or_name, logging.Logger) else logging.getLogger(logger_or_name)
 
+        class QuietAction(argparse.Action):
+            def __call__(
+                self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: list[object],
+                option_string=None
+            ) -> None:
+                logger.setLevel(level := min(getattr(namespace, self.dest) + 10, logging.CRITICAL + 10))
+                setattr(namespace, self.dest, level)
+
         return typing.Annotated[
-            _Verbose,
-            _AddArgument[_Verbose](name_or_flags=['-v', '--verbose'], action='count', default=0),
-            _SideEffect[_Verbose](
-                lambda verbose: logger.setLevel(verbose := ((verbose * -10) % (logging.CRITICAL + 10))) or verbose
-            )
+            _LogLevelInt,
+            _AddArgument[_LogLevelInt](name_or_flags=['-q', '--quiet'], action=QuietAction, nargs=0),
+            _SideEffect[_LogLevelInt](lambda verbose: logger.setLevel(verbose))
         ]
 
     @staticmethod
-    def log_level(logger_or_name: logging.Logger | str, /) -> type[_LogLevel]:
+    def verbose(logger_or_name: logging.Logger | str, /) -> type[_LogLevelInt]:
+        logger = logger_or_name if isinstance(logger_or_name, logging.Logger) else logging.getLogger(logger_or_name)
+
+        class VerboseAction(argparse.Action):
+            def __call__(
+                self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: list[object],
+                option_string=None
+            ) -> None:
+                logger.setLevel(level := max(getattr(namespace, self.dest) - 10, logging.DEBUG))
+                setattr(namespace, self.dest, level)
+
+        return typing.Annotated[
+            _LogLevelInt,
+            _AddArgument[_LogLevelInt](name_or_flags=['-v', '--verbose'], action=VerboseAction, nargs=0),
+            _SideEffect[_LogLevelInt](lambda verbose: logger.setLevel(verbose))
+        ]
+
+    @staticmethod
+    def log_level(logger_or_name: logging.Logger | str, /) -> type[_LogLevelStr]:
         logger = logger_or_name if isinstance(logger_or_name, logging.Logger) else logging.getLogger(logger_or_name)
 
         return typing.Annotated[
-            _LogLevel, _SideEffect[_LogLevel](lambda log_level: logger.setLevel(log_level) or log_level)
+            _LogLevelStr,
+            _AddArgument[_LogLevelStr](name_or_flags=['-l', '--log-level']),
+            _SideEffect[_LogLevelStr](lambda log_level: logger.setLevel(log_level))
         ]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _Sticky[** Params, Return]:
+    ...
+    # TODO: Make a sticky flag that memoizes a flag.
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -309,15 +343,14 @@ class _Decoration[** Params, Return]:
     A _Decoration instance is attached to an entrypoint decorated via _Decorator.__call__. The `run` function can then
     be called with `<entrypoint>.cli.run`.
     """
-    decorated: _Decorated[Params, Return]
-    name: _Name
+    decoratee: _Decorated[Params, Return]
 
     @property
     def parser(self) -> argparse.ArgumentParser:
-        signature = inspect.signature(self.decorated)
+        signature = inspect.signature(self.decoratee)
         parser = argparse.ArgumentParser(
             description='\n'.join(filter(None, [
-                self.decorated.__doc__,
+                self.decoratee.__doc__,
                 f'return type: {pprint.pformat(signature.return_annotation, compact=True, width=75)}'
             ])),
             formatter_class=argparse.RawTextHelpFormatter
@@ -381,28 +414,29 @@ class _Decoration[** Params, Return]:
 
         # Note that this may be the registered entrypoint of a submodule, not the entrypoint that is decorated.
         args, kwargs = [], {}
-        for parameter in inspect.signature(self.decorated).parameters.values():
-            side_effects = [lambda value: value]
+        for parameter in inspect.signature(self.decoratee).parameters.values():
+            side_effects = []
             if typing.get_origin(parameter.annotation) is typing.Annotated:
                 for annotation in typing.get_args(parameter.annotation):
                     match annotation:
                         case _SideEffect(side_effect):
                             side_effects.append(side_effect)
+
             side_effect = [
                 *itertools.accumulate(side_effects, func=lambda x, y: lambda z: x(y(z)), initial=lambda x: x)
             ][-1]
 
+            values = []
             match parameter.kind:
                 case inspect.Parameter.POSITIONAL_ONLY:
                     values = [parsed_args.pop(parameter.name)]
                     args.append(side_effect(values[0]))
                 case inspect.Parameter.POSITIONAL_OR_KEYWORD | inspect.Parameter.KEYWORD_ONLY:
-                    values = [side_effect(parsed_args.pop(parameter.name))]
+                    values = [parsed_args.pop(parameter.name)]
                     kwargs[parameter.name] = values[0]
                 case inspect.Parameter.VAR_POSITIONAL:
-                    values = [parsed_args.pop(parameter.name)]
-                    values = values[0][0]
-                    args += [side_effect(value) for value in values]
+                    values = [parsed_args.pop(parameter.name)][0][0]
+                    args += values
                 case inspect.Parameter.VAR_KEYWORD:
                     parser = argparse.ArgumentParser()
                     for remainder_arg in remainder_args:
@@ -411,27 +445,29 @@ class _Decoration[** Params, Return]:
                                 remainder_arg, type=lambda arg: _Parser(t=parameter.annotation).parse_arg(arg)
                             )
                     remainder_ns = parser.parse_args(remainder_args)
-                    remainder_args = {key: side_effect(value) for key, value in vars(remainder_ns).items()}
-
-                    kwargs.update(remainder_args)
                     remainder_args = []
+                    remainder_kwargs = dict(vars(remainder_ns).items())
+
+                    values = remainder_kwargs.values()
+                    kwargs.update(remainder_kwargs)
+
+            [side_effect(value) for side_effect in side_effects for value in values]
 
         assert not parsed_args, f'Unrecognized args: {parsed_args!r}.'
         assert not remainder_args, f'Unrecognized args: {remainder_args!r}.'
 
-        result = self.decorated(*args, **kwargs)
-        if inspect.iscoroutinefunction(self.decorated):
+        result = self.decoratee(*args, **kwargs)
+        if inspect.iscoroutinefunction(self.decoratee):
             result = asyncio.run(result)
 
         return result
 
 
-class _Decoratee[** Params, Return](typing.Protocol):
+class _Decoratee[** Params, Return](typing.Callable[Params, Return]):
     __call__: typing.Callable[Params, Return]
 
 
-class _Decorated[** Params, Return](typing.Protocol):
-    __call__: typing.Callable[Params, Return]
+class _Decorated[** Params, Return](_Decoratee[Params, Return], Register.Decorated):
     cli: _Decoration[Params, Return]
 
 
@@ -475,79 +511,68 @@ class _Decorator:
         submodules: If True, subcommands are generated for every submodule in the module hierarchy. CLI bindings are
             generated for each submodule top-level function with name matching decorated entrypoint name.
     """
-    name: _Name = ...
-
-    _registry: typing.ClassVar[dict[_Name, _Decoration | set[str]]] = {}
+    _name: str = ...
 
     Annotated: typing.ClassVar[type[_Annotated]] = _Annotated
     AddArgument: typing.ClassVar[type[_AddArgument]] = _AddArgument
     Exception: typing.ClassVar[type[_Exception]] = _Exception
-    Name: typing.ClassVar[type[_Name]] = _Name
     SideEffect: typing.ClassVar[type[_SideEffect]] = _SideEffect
+    Sticky: typing.ClassVar[type[_Sticky]] = _Sticky
 
-    def __init__(self, name: _Name = ..., /) -> None:
-        object.__setattr__(self, 'name', name if name is ... else '.'.join(filter(
-            lambda name_part: re.match(r'<.+>', name_part) is None, name.split('.')
-        )))
+    def __init__(self, _name: Key.Name = ..., /) -> None:
+        object.__setattr__(self, '_name', _name)
 
     def __call__[** Params, Return](self, decoratee: _Decoratee[Params, Return], /) -> _Decorated[Params, Return]:
-        name = self.name if self.name is not ... else '.'.join([decoratee.__module__, decoratee.__qualname__])
-        name_parts = tuple(filter(lambda name_part: re.match(r'<.+>', name_part) is None, name.split('.')))
-        name = '.'.join(name_parts)
+        decoratee = Register(self._name)(decoratee)
 
-        decorated: _Decorated[Params, Return] = decoratee  # type: ignore
+        decoratee.cli = _Decoration[Params, Return](decoratee=decoratee)
+        decoratee: _Decorated[Params, Return]
 
-        # Add the entrypoint decoration to the registry.
-        decorated.cli = self._registry[name] = _Decoration[Params, Return](decorated=decorated, name=name)
-
-        # Create all the registry links that lead up to the entrypoint decoration.
-        for i in range(1, len(name_parts)):
-            self._registry.setdefault('.'.join(name_parts[:i]), set()).add(name_parts[i])
-
-        return decorated
+        return decoratee
 
     @property
-    def _decoration[** Params, Return](self) -> _Decoration[Params, Return]:
-        name = '' if self.name is ... else self.name
+    def _decorated[** Params, Return](self) -> _Decorated[Params, Return]:
+        name = '' if self._name is ... else self._name
+        key = Key.Key.of_name(name)
 
-        match value := self._registry.get(name):
-            case _Decoration(decorated=_, name=_):
-                decoration = value
+        match value := Register(self._name).registry.get(key):
             case None:
-                def decorated() -> None:
+                @Key()
+                def decoratee() -> None:
                     """This CLI has no registered entrypoint or subcommands."""
-                decoration = _Decoration(decorated=decorated, name=name)
-                decorated.cli = decoration
+                decoration = _Decoration(decoratee=decoratee)
+                decoratee.cli = decoration
             case set(_):
                 # Using the local variables in function signature converts the entire annotation to a string without
                 #  evaluating it. Rather than let that happen, force evaluation of the annotation.
                 #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-                def decorated(subcommand: typing.Literal[*sorted(value)]) -> None:  # noqa
+                @Key()
+                def decoratee(subcommand: typing.Literal[*sorted(value)]) -> None:  # noqa
                     self.parser.print_usage()
-                decorated.__annotations__['subcommand'] = eval(decorated.__annotations__['subcommand'], None, locals())
+                decoratee.__annotations__['subcommand'] = eval(decoratee.__annotations__['subcommand'], None, locals())
 
-                decoration = _Decoration[Params, Return](decorated=decorated, name=name)
-                decorated.cli = decoration
-            case _:  # pragma: no cover
-                raise RuntimeError(f'Registry has unhandled item ({name=!r}, {value=!r}).')
+                decoration = _Decoration[Params, Return](decoratee=decoratee)
+                decoratee.cli = decoration
+            case _:
+                decoratee = value
 
-        return decoration
+        return decoratee
 
     @property
     def parser(self) -> argparse.ArgumentParser:
-        return self._decoration.parser
+        return self._decorated.cli.parser
 
     def run(self, args: typing.Sequence[str] = ...) -> object:
         args = sys.argv[1:] if args is ... else args
+        registry = Register(self._name).registry
 
-        name_parts = [] if self.name is ... else list(filter(
-            lambda name_part: re.match(r'<.+>', name_part) is None, self.name.split('.')
-        ))
-        while args and ('.'.join([*name_parts, args[0]]) in self._registry):
-            name_parts.append(args.pop(0))
-        name = '.'.join(name_parts)
+        key = Key.Key.of_name(self._name)
 
-        return _Decorator(name)._decoration.run(args)
+        while args and (tuple([*key, args[0]]) in registry):
+            key = tuple([*key, args.pop(0)])
+        name = '.'.join(key)
+
+        return _Decorator(name)._decorated.cli.run(args)
 
 
 CLI = _Decorator

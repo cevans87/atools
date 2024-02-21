@@ -1,5 +1,3 @@
-import abc
-import annotated_types
 import asyncio
 import collections
 import dataclasses
@@ -17,12 +15,15 @@ import threading
 import typing
 import weakref
 
+from ._key import Key
+from ._register import Register
+from ._throttle import Throttle
+
 
 Keygen = typing.Callable[..., object]
-_Name = typing.Annotated[str, annotated_types.Predicate(lambda name: re.match(r'^[.a-z]*$', name) is not None)]
 
 
-class Pickler(abc.ABC):
+class _Serializer(typing.Protocol):
 
     @staticmethod
     def dumps(_str: str) -> str: ...
@@ -68,11 +69,15 @@ class _MemoizeBase[** Params, Return]:
     duration: datetime.timedelta | None
     fn: typing.Callable
     keygen: Keygen | None
-    pickler: Pickler = dataclasses.field(hash=False)
+    serializer: _Serializer = dataclasses.field(hash=False)
     size: int | None
 
-    expire_order: collections.OrderedDict = dataclasses.field(init=False, default_factory=collections.OrderedDict, hash=False)
-    memos: collections.OrderedDict = dataclasses.field(init=False, default_factory=collections.OrderedDict, hash=False)
+    expire_order: collections.OrderedDict = dataclasses.field(
+        init=False, default_factory=collections.OrderedDict, hash=False
+    )
+    memos: collections.OrderedDict = dataclasses.field(
+        init=False, default_factory=collections.OrderedDict, hash=False
+    )
 
     def __post_init__(self) -> None:
         if self.db is not None:
@@ -104,7 +109,7 @@ class _MemoizeBase[** Params, Return]:
             ).fetchall():
                 memo = self.make_memo(t0=t0)
                 memo.memo_return_state.called = True
-                memo.memo_return_state.value = self.pickler.loads(v)
+                memo.memo_return_state.value = self.serializer.loads(v)
                 self.memos[k] = memo
             if self.duration:
                 for k, t0 in self.db.execute(
@@ -183,7 +188,7 @@ class _MemoizeBase[** Params, Return]:
         if memo.memo_return_state.raised:
             raise memo.memo_return_state.value
         elif (self.db is not None) and (self.memos[key] is memo):
-            value = self.pickler.dumps(memo.memo_return_state.value)
+            value = self.serializer.dumps(memo.memo_return_state.value)
             self.db.execute(
                 textwrap.dedent(f'''
                     INSERT OR REPLACE INTO `{self.table_name}`
@@ -423,15 +428,14 @@ class _SyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
             super().reset_key(key)
 
 
-type _Decoration[**Params, Return] = _AsyncDecoration[Params, Return] | _SyncDecoration[Params, Return]
+type _Decoration[** Params, Return] = _AsyncDecoration[Params, Return] | _SyncDecoration[Params, Return]
 
 
 class _Decoratee[** Params, Return](typing.Protocol):
     __call__: typing.Callable[Params, Return]
 
 
-class _Decorated[** Params, Return](typing.Protocol):
-    __call__: typing.Callable[Params, Return]
+class _Decorated[** Params, Return](_Decoratee[Params, Return]):
     memoize: _Decoration[Params, Return]
 
 
@@ -705,40 +709,42 @@ class _Decorator:
         ```
     """
 
-    name: _Name = ...
+    _name: Key.Name = ...
     db_path: pathlib.Path | None = None
     duration: int | float | datetime.timedelta | None = None
     keygen: Keygen | None = None
-    pickler: Pickler | None = None
+    serializer: _Serializer | None = None
     size: int | None = None
 
     _all_decorators: typing.ClassVar[weakref.WeakSet] = weakref.WeakSet()
 
     def __init__(
         self,
-        name: _Name = ...,
+        _name: Key.Name = ...,
         /,
         *,
         db_path: pathlib.Path | None = None,
         duration: int | float | datetime.timedelta | None = None,
         keygen: Keygen | None = None,
-        pickler: Pickler | None = None,
+        serializer: _Serializer | None = None,
         size: int | None = None
     ) -> None:
-        object.__setattr__(self, 'name', name if name is ... else '.'.join(filter(
-            lambda name_part: re.match(r'<.+>', name_part) is None, name.split('.')
-        )))
+        object.__setattr__(self, '_name', _name if _name is ... else re.sub(r'.<.*>', '', _name))
         object.__setattr__(self, 'db_path', db_path)
         object.__setattr__(self, 'duration', duration)
         object.__setattr__(self, 'keygen', keygen)
-        object.__setattr__(self, 'pickler', pickler)
+        object.__setattr__(self, 'serializer', serializer)
         object.__setattr__(self, 'size', size)
 
     def __call__[** Params, Return](self, decoratee: _Decoratee[Params, Return], /) -> _Decorated[Params, Return]:
+        decoratee = Key(self._name)(decoratee)
+
         db = sqlite3.connect(f'{self.db_path}') if self.db_path is not None else None
-        duration = datetime.timedelta(seconds=self.duration) if isinstance(self.duration, (int, float)) else self.duration
+        duration = datetime.timedelta(seconds=self.duration) if isinstance(
+            self.duration, (int, float)
+        ) else self.duration
         assert (duration is None) or (duration.total_seconds() > 0)
-        pickler = pickle if self.pickler is None else self.pickler
+        serializer = pickle if self.serializer is None else self.serializer
         assert (self.size is None) or (self.size > 0)
         default_kwargs: dict[str, object] = {
             k: v.default for k, v in inspect.signature(decoratee).parameters.items()
@@ -756,7 +762,7 @@ class _Decorator:
             duration=duration,
             fn=decoratee,
             keygen=self.keygen,
-            pickler=pickler,
+            serializer=serializer,
             size=self.size,
         ).get_decorator()
 

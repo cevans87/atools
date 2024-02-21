@@ -285,7 +285,7 @@ def test_annotation_log_level_of_logger_sets_choices() -> None:
     @atools.CLI()
     def entrypoint(foo: atools.CLI.Annotated.log_level(logger) = 'DEBUG') -> ...: ...
 
-    for choice in typing.get_args(atools.CLI.Annotated.LogLevel):
+    for choice in typing.get_args(atools.CLI.Annotated.LogLevelStr):
         assert choice in entrypoint.cli.parser.format_help()
 
 
@@ -295,19 +295,19 @@ def test_annotation_log_level_of_logger_sets_log_level() -> None:
 
     @atools.CLI()
     def entrypoint(
-        foo: atools.CLI.Annotated.log_level(logger) = 'NOTSET',
+        log_level: atools.CLI.Annotated.log_level(logger) = 'NOTSET',
     ) -> dict[str, atools.CLI.Annotated.LogLevel]:
         return locals()
 
     assert logger.level == logging.NOTSET
 
-    assert entrypoint.cli.run(shlex.split('--foo CRITICAL')) == {'foo': 'CRITICAL'}
+    assert entrypoint.cli.run(shlex.split('--log-level CRITICAL')) == {'log_level': 'CRITICAL'}
     assert logger.level == logging.CRITICAL
 
-    assert entrypoint.cli.run(shlex.split('--foo INFO')) == {'foo': 'INFO'}
+    assert entrypoint.cli.run(shlex.split('--log-level INFO')) == {'log_level': 'INFO'}
     assert logger.level == logging.INFO
 
-    assert entrypoint.cli.run(shlex.split('')) == {'foo': 'NOTSET'}
+    assert entrypoint.cli.run(shlex.split('')) == {'log_level': 'NOTSET'}
     assert logger.level == logging.NOTSET
 
 
@@ -317,19 +317,19 @@ def test_annotation_log_level_of_name_sets_log_level() -> None:
 
     @atools.CLI()
     def entrypoint(
-        foo: atools.CLI.Annotated.log_level('test_annotation_log_level_of_name_sets_log_level') = 'NOTSET',
+        log_level: atools.CLI.Annotated.log_level('test_annotation_log_level_of_name_sets_log_level') = 'NOTSET',
     ) -> dict[str, atools.CLI.Annotated.LogLevel]:
         return locals()
 
     assert logger.level == logging.NOTSET
 
-    assert entrypoint.cli.run(shlex.split('--foo CRITICAL')) == {'foo': 'CRITICAL'}
+    assert entrypoint.cli.run(shlex.split('--log-level CRITICAL')) == {'log_level': 'CRITICAL'}
     assert logger.level == logging.CRITICAL
 
-    assert entrypoint.cli.run(shlex.split('--foo INFO')) == {'foo': 'INFO'}
+    assert entrypoint.cli.run(shlex.split('--log-level INFO')) == {'log_level': 'INFO'}
     assert logger.level == logging.INFO
 
-    assert entrypoint.cli.run(shlex.split('')) == {'foo': 'NOTSET'}
+    assert entrypoint.cli.run(shlex.split('')) == {'log_level': 'NOTSET'}
     assert logger.level == logging.NOTSET
 
 
@@ -339,13 +339,13 @@ def test_annotation_verbose_sets_log_level() -> None:
 
     @atools.CLI()
     def entrypoint(
-        verbose: atools.CLI.Annotated.verbose(logger) = logging.NOTSET,
+        verbose: atools.CLI.Annotated.verbose(logger) = logging.CRITICAL + 10,
     ) -> dict[str, atools.CLI.Annotated.LogLevel]:
         return locals()
 
     assert logger.level == logging.NOTSET
-    assert entrypoint.cli.run(shlex.split('')) == {'verbose': logging.NOTSET}
-    assert logger.level == logging.NOTSET
+    assert entrypoint.cli.run(shlex.split('')) == {'verbose': logging.CRITICAL + 10}
+    assert logger.level == logging.CRITICAL + 10
     assert entrypoint.cli.run(shlex.split('-v')) == {'verbose': logging.CRITICAL}
     assert logger.level == logging.CRITICAL
 
