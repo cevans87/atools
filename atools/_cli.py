@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """Provides `CLI` decorator class and sane-default instantiated `cli` decorator instance.
 
 The decorator may be used to simplify generation of a CLI based entirely on decorated entrypoint function signature.
@@ -54,13 +52,12 @@ import inspect
 import itertools
 import logging
 import pprint
-import re
 import types
 import typing
 import sys
 
-from ._key import Key
-from ._register import Register
+from . import _key
+from . import _register
 
 
 class _Exception(Exception):
@@ -331,19 +328,19 @@ class _Annotated:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _Sticky[** Params, Return]:
+class _Persist[** Params, Return]:
     ...
     # TODO: Make a sticky flag that memoizes a flag.
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _Decoration[** Params, Return]:
+class Decoration[** Params, Return]:
     """CLI decoration attached to decorated entrypoint at `<entrypoint>.cli`.
 
     A _Decoration instance is attached to an entrypoint decorated via _Decorator.__call__. The `run` function can then
     be called with `<entrypoint>.cli.run`.
     """
-    decoratee: _Decorated[Params, Return]
+    decoratee: Decorated[Params, Return]
 
     @property
     def parser(self) -> argparse.ArgumentParser:
@@ -463,16 +460,16 @@ class _Decoration[** Params, Return]:
         return result
 
 
-class _Decoratee[** Params, Return](typing.Callable[Params, Return]):
+class Decoratee[** Params, Return](typing.Callable[Params, Return]):
     __call__: typing.Callable[Params, Return]
 
 
-class _Decorated[** Params, Return](_Decoratee[Params, Return], Register.Decorated):
-    cli: _Decoration[Params, Return]
+class Decorated[** Params, Return](Decoratee[Params, Return], _register.Decorated):
+    cli: Decoration[Params, Return]
 
 
 @dataclasses.dataclass(frozen=True)
-class _Decorator:
+class Decorator:
     """Decorate a function, adding `.cli` attribute.
 
     The `.cli.run` function parses command line arguments (e.g. `sys.argv[1:]`) and executes the decorated function with
@@ -511,68 +508,57 @@ class _Decorator:
         submodules: If True, subcommands are generated for every submodule in the module hierarchy. CLI bindings are
             generated for each submodule top-level function with name matching decorated entrypoint name.
     """
-    _name: str = ...
+    _prefix: _key.Name = ...
+    _suffix: _key.Name = ...
 
     Annotated: typing.ClassVar[type[_Annotated]] = _Annotated
     AddArgument: typing.ClassVar[type[_AddArgument]] = _AddArgument
     Exception: typing.ClassVar[type[_Exception]] = _Exception
+    Persist: typing.ClassVar[type[_Persist]] = _Persist
     SideEffect: typing.ClassVar[type[_SideEffect]] = _SideEffect
-    Sticky: typing.ClassVar[type[_Sticky]] = _Sticky
 
-    def __init__(self, _name: Key.Name = ..., /) -> None:
-        object.__setattr__(self, '_name', _name)
+    def __call__[** Params, Return](self, decoratee: Decoratee[Params, Return], /) -> Decorated[Params, Return]:
+        decoratee = _register.Decorator(self._prefix, self._suffix)(decoratee)
 
-    def __call__[** Params, Return](self, decoratee: _Decoratee[Params, Return], /) -> _Decorated[Params, Return]:
-        decoratee = Register(self._name)(decoratee)
-
-        decoratee.cli = _Decoration[Params, Return](decoratee=decoratee)
-        decoratee: _Decorated[Params, Return]
-
-        return decoratee
-
-    @property
-    def _decorated[** Params, Return](self) -> _Decorated[Params, Return]:
-        name = '' if self._name is ... else self._name
-        key = Key.Key.of_name(name)
-
-        match value := Register(self._name).registry.get(key):
-            case None:
-                @Key()
-                def decoratee() -> None:
-                    """This CLI has no registered entrypoint or subcommands."""
-                decoration = _Decoration(decoratee=decoratee)
-                decoratee.cli = decoration
-            case set(_):
-                # Using the local variables in function signature converts the entire annotation to a string without
-                #  evaluating it. Rather than let that happen, force evaluation of the annotation.
-                #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-                @Key()
-                def decoratee(subcommand: typing.Literal[*sorted(value)]) -> None:  # noqa
-                    self.parser.print_usage()
-                decoratee.__annotations__['subcommand'] = eval(decoratee.__annotations__['subcommand'], None, locals())
-
-                decoration = _Decoration[Params, Return](decoratee=decoratee)
-                decoratee.cli = decoration
-            case _:
-                decoratee = value
+        decoratee.cli = Decoration[Params, Return](decoratee=decoratee)
+        decoratee: Decorated[Params, Return]
 
         return decoratee
 
     @property
     def parser(self) -> argparse.ArgumentParser:
-        return self._decorated.cli.parser
+        return self.cli.parser
+
+    @property
+    def cli(self) -> Decoration:
+        register = _register.Decorator(self._prefix, self._suffix).get_register()
+        key = _key.Decorator(self._prefix, self._suffix).key
+
+        if (
+            ((decorated := register.decorateds.get(key)) is None)
+            or not (isinstance(getattr(decorated, 'cli', None), Decoration))
+        ):
+            @Decorator('.'.join(key))
+            def decoratee(subcommand: typing.Literal[*sorted(register.links.get(key, set()))]) -> None:  # noqa
+                self.parser.print_usage()
+
+            # Using the local variables in function signature converts the entire annotation to a string without
+            #  evaluating it. Rather than let that happen, force evaluation of the annotation.
+            #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
+            decoratee.__annotations__['subcommand'] = eval(decoratee.__annotations__['subcommand'], None, locals())
+            decorated: Decorated = decoratee  # noqa
+
+        return decorated.cli
 
     def run(self, args: typing.Sequence[str] = ...) -> object:
         args = sys.argv[1:] if args is ... else args
-        registry = Register(self._name).registry
+        register = _register.Decorator(self._prefix, self._suffix).get_register()
+        key = _key.Decorator(self._prefix, self._suffix).key
 
-        key = Key.Key.of_name(self._name)
-
-        while args and (tuple([*key, args[0]]) in registry):
+        while args and (tuple([*key, args[0]]) in register.links):
             key = tuple([*key, args.pop(0)])
-        name = '.'.join(key)
 
-        return _Decorator(name)._decorated.cli.run(args)
+        return Decorator('.'.join(key)).cli.run(args)
 
 
-CLI = _Decorator
+CLI = Decorator

@@ -231,15 +231,14 @@ def test_bad_arg_does_not_parse(arg: Arg) -> None:
 
 
 def test_execute_hidden_subcommand_works() -> None:
+    prefix = test_execute_hidden_subcommand_works.__name__
 
-    @atools.CLI(f'{test_execute_hidden_subcommand_works.__name__}._foo')
+    @atools.CLI(prefix, '_foo')
     def _foo(foo: str) -> dict[str, str]:
         return locals()
 
-    assert '_foo' not in atools.CLI(f'{test_execute_hidden_subcommand_works.__name__}').parser.format_help()
-    assert atools.CLI(f'{test_execute_hidden_subcommand_works.__name__}').run(shlex.split(
-        '_foo hidden_subcommand_works'
-    )) == {'foo': 'hidden_subcommand_works'}
+    assert '_foo' not in atools.CLI(prefix).parser.format_help()
+    assert atools.CLI(prefix).run(shlex.split('_foo hidden_subcommand_works')) == {'foo': 'hidden_subcommand_works'}
 
 
 def test_async_entrypoint_works() -> None:
@@ -415,15 +414,16 @@ def test_literal_enforces_choices() -> None:
 
 
 def test_cli_names_enforce_subcommand_structure() -> None:
+    prefix = test_cli_names_enforce_subcommand_structure.__name__
 
-    for name in ['foo.baz', 'foo.qux', 'bar.quux', 'bar.corge']:
-        @atools.CLI(name)
+    for suffix in ['foo.baz', 'foo.qux', 'bar.quux', 'bar.corge']:
+        @atools.CLI(prefix, suffix)
         def entrypoint() -> dict[str, object]: ...
 
-    assert 'baz' in atools.CLI('foo').parser.format_help()
-    assert 'qux' in atools.CLI('foo').parser.format_help()
-    assert 'quux' in atools.CLI('bar').parser.format_help()
-    assert 'corge' in atools.CLI('bar').parser.format_help()
+    assert 'baz' in atools.CLI(prefix, 'foo').parser.format_help()
+    assert 'qux' in atools.CLI(prefix, 'foo').parser.format_help()
+    assert 'quux' in atools.CLI(prefix, 'bar').parser.format_help()
+    assert 'corge' in atools.CLI(prefix, 'bar').parser.format_help()
 
 
 def test_unresolved_annotation_raises_assertion_error() -> None:
@@ -440,7 +440,7 @@ def test_unresolved_annotation_raises_assertion_error() -> None:
 
 
 def test_missing_entrypoint_generates_blank_entrypoint() -> None:
-    assert '-h' in atools.CLI('foobar').parser.format_help()
+    assert '-h' in atools.CLI(test_missing_entrypoint_generates_blank_entrypoint.__name__).parser.format_help()
 
 
 def test_var_positional_args_are_parsed() -> None:

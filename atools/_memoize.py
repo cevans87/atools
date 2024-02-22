@@ -7,7 +7,6 @@ import hashlib
 import inspect
 import pathlib
 import pickle
-import re
 import sqlite3
 import textwrap
 import time
@@ -15,15 +14,14 @@ import threading
 import typing
 import weakref
 
-from ._key import Key
-from ._register import Register
-from ._throttle import Throttle
+from . import _context
+from . import _key
 
 
 Keygen = typing.Callable[..., object]
 
 
-class _Serializer(typing.Protocol):
+class Serializer(typing.Protocol):
 
     @staticmethod
     def dumps(_str: str) -> str: ...
@@ -32,44 +30,44 @@ class _Serializer(typing.Protocol):
     def loads(_bytes: bytes) -> object: ...
 
 
-class _MemoZeroValue:
+class MemoZeroValue:
     ...
 
 
 @dataclasses.dataclass
-class _MemoReturnState:
+class MemoReturnState:
     called: bool = False
     raised: bool = False
-    value: object = _MemoZeroValue
+    value: object = MemoZeroValue
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _MemoBase:
+class MemoBase:
     t0: float | None
-    memo_return_state: _MemoReturnState = dataclasses.field(init=False, default_factory=_MemoReturnState)
+    memo_return_state: MemoReturnState = dataclasses.field(init=False, default_factory=MemoReturnState)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _AsyncMemo(_MemoBase):
+class AsyncMemo(MemoBase):
     async_lock: asyncio.Lock = dataclasses.field(init=False, default_factory=lambda: asyncio.Lock())
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _SyncMemo(_MemoBase):
+class SyncMemo(MemoBase):
     sync_lock: threading.Lock = dataclasses.field(init=False, default_factory=lambda: threading.Lock())
 
 
-_Memo = _AsyncMemo | _SyncMemo
+_Memo = AsyncMemo | SyncMemo
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _MemoizeBase[** Params, Return]:
+class MemoizeBase[** Params, Return]:
     db: sqlite3.Connection | None
     default_kwargs: dict[str, object]
     duration: datetime.timedelta | None
     fn: typing.Callable
     keygen: Keygen | None
-    serializer: _Serializer = dataclasses.field(hash=False)
+    serializer: Serializer = dataclasses.field(hash=False)
     size: int | None
 
     expire_order: collections.OrderedDict = dataclasses.field(
@@ -233,7 +231,7 @@ class _MemoizeBase[** Params, Return]:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _AsyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
+class AsyncDecoration[** Params, Return](MemoizeBase[Params, Return]):
 
     async def get_raw_key(self, *args, **kwargs) -> typing.Tuple[typing.Hashable, ...]:
         if self.keygen is None:
@@ -260,7 +258,7 @@ class _AsyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
                 raw_key = await self.get_raw_key(*args, **kwargs)
                 key = self.get_key(raw_key)
 
-                memo: _AsyncMemo = self.get_memo(key, insert=insert)
+                memo: AsyncMemo = self.get_memo(key, insert=insert)
                 if memo is None:
                     return await fn(*args, **kwargs)
 
@@ -269,7 +267,7 @@ class _AsyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
                 async with memo.async_lock:
                     if (
                             (insert and not memo.memo_return_state.called) or
-                            (update and memo.memo_return_state.value is not _MemoZeroValue)
+                            (update and memo.memo_return_state.value is not MemoZeroValue)
                     ):
                         memo.memo_return_state.called = True
                         try:
@@ -323,12 +321,12 @@ class _AsyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
         return decorator
 
     @staticmethod
-    def make_memo(t0: float | None) -> _AsyncMemo:
-        return _AsyncMemo(t0=t0)
+    def make_memo(t0: float | None) -> AsyncMemo:
+        return AsyncMemo(t0=t0)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _SyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
+class SyncDecoration[** Params, Return](MemoizeBase[Params, Return]):
 
     _sync_lock: threading.Lock = dataclasses.field(init=False, default_factory=lambda: threading.Lock())
 
@@ -352,7 +350,7 @@ class _SyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
                 key = self.get_key(raw_key)
 
                 with self._sync_lock:
-                    memo: _SyncMemo = self.get_memo(key, insert=insert)
+                    memo: SyncMemo = self.get_memo(key, insert=insert)
                     if memo is None:
                         return fn(*args, **kwargs)
 
@@ -361,7 +359,7 @@ class _SyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
                 with memo.sync_lock:
                     if (
                             (insert and not memo.memo_return_state.called) or
-                            (update and memo.memo_return_state.value is not _MemoZeroValue)
+                            (update and memo.memo_return_state.value is not MemoZeroValue)
                     ):
                         memo.memo_return_state.called = True
                         try:
@@ -416,8 +414,8 @@ class _SyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
         return decorator
 
     @staticmethod
-    def make_memo(t0: float | None) -> _SyncMemo:
-        return _SyncMemo(t0=t0)
+    def make_memo(t0: float | None) -> SyncMemo:
+        return SyncMemo(t0=t0)
 
     def reset(self) -> None:
         with self._sync_lock:
@@ -428,19 +426,33 @@ class _SyncDecoration[** Params, Return](_MemoizeBase[Params, Return]):
             super().reset_key(key)
 
 
-type _Decoration[** Params, Return] = _AsyncDecoration[Params, Return] | _SyncDecoration[Params, Return]
+type Decoration[** Params, Return] = AsyncDecoration[Params, Return] | SyncDecoration[Params, Return]
 
 
-class _Decoratee[** Params, Return](typing.Protocol):
+class AsyncDecoratee[** Params, Return](typing.Protocol):
     __call__: typing.Callable[Params, Return]
 
 
-class _Decorated[** Params, Return](_Decoratee[Params, Return]):
-    memoize: _Decoration[Params, Return]
+class SyncDecoratee[** Params, Return](typing.Protocol):
+    __call__: typing.Callable[Params, Return]
 
 
-@dataclasses.dataclass(frozen=True, init=False)
-class _Decorator:
+type Decoratee[** Params, Return] = AsyncDecoratee[Params, Return] | SyncDecoratee[Params, Return]
+
+
+class AsyncDecorated[** Params, Return](AsyncDecoratee[Params, Return], _context.AsyncDecorated):
+    memoize: Decoration[Params, Return]
+
+
+class SyncDecorated[** Params, Return](SyncDecoratee[Params, Return], _context.SyncDecorated):
+    memoize: Decoration[Params, Return]
+
+
+type Decorated[** Params, Return] = AsyncDecorated[Params, Return] | SyncDecorated[Params, Return]
+
+
+@dataclasses.dataclass(frozen=True)
+class Decorator:
     """Decorates a function call and caches return value for given inputs.
     - If `db_path` is provided, memos will persist on disk and reloaded during initialization.
     - If `duration` is provided, memos will only be valid for given `duration`.
@@ -709,35 +721,28 @@ class _Decorator:
         ```
     """
 
-    _name: Key.Name = ...
+    _prefix: _key.Name = ...
+    _suffix: _key.Name = ...
     db_path: pathlib.Path | None = None
     duration: int | float | datetime.timedelta | None = None
     keygen: Keygen | None = None
-    serializer: _Serializer | None = None
+    serializer: Serializer | None = None
     size: int | None = None
 
     _all_decorators: typing.ClassVar[weakref.WeakSet] = weakref.WeakSet()
 
-    def __init__(
-        self,
-        _name: Key.Name = ...,
-        /,
-        *,
-        db_path: pathlib.Path | None = None,
-        duration: int | float | datetime.timedelta | None = None,
-        keygen: Keygen | None = None,
-        serializer: _Serializer | None = None,
-        size: int | None = None
-    ) -> None:
-        object.__setattr__(self, '_name', _name if _name is ... else re.sub(r'.<.*>', '', _name))
-        object.__setattr__(self, 'db_path', db_path)
-        object.__setattr__(self, 'duration', duration)
-        object.__setattr__(self, 'keygen', keygen)
-        object.__setattr__(self, 'serializer', serializer)
-        object.__setattr__(self, 'size', size)
+    @typing.overload
+    def __call__[** Params, Return](
+        self, decoratee: AsyncDecoratee[Params, Return], /
+    ) -> AsyncDecorated[Params, Return]: ...
 
-    def __call__[** Params, Return](self, decoratee: _Decoratee[Params, Return], /) -> _Decorated[Params, Return]:
-        decoratee = Key(self._name)(decoratee)
+    @typing.overload
+    def __call__[** Params, Return](
+        self, decoratee: SyncDecoratee[Params, Return], /
+    ) -> SyncDecorated[Params, Return]: ...
+
+    def __call__[** Params, Return](self, decoratee: Decoratee[Params, Return], /) -> Decorated[Params, Return]:
+        decoratee = _key.Decorator(self._prefix, self._suffix)(decoratee)
 
         db = sqlite3.connect(f'{self.db_path}') if self.db_path is not None else None
         duration = datetime.timedelta(seconds=self.duration) if isinstance(
@@ -751,9 +756,9 @@ class _Decorator:
         }
 
         if inspect.iscoroutinefunction(decoratee):
-            decoration_cls = _AsyncDecoration
+            decoration_cls = AsyncDecoration
         else:
-            decoration_cls = _SyncDecoration
+            decoration_cls = SyncDecoration
 
         # noinspection PyArgumentList
         decorator = decoration_cls(
@@ -774,6 +779,3 @@ class _Decorator:
     def reset_all(cls) -> None:
         for decorator in cls._all_decorators:
             decorator.memoize.reset()
-
-
-Memoize = _Decorator

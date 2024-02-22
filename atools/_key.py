@@ -4,45 +4,59 @@ import dataclasses
 import re
 import typing
 
-
-_Name = typing.Annotated[str, annotated_types.Predicate(lambda name: re.match(r'^[.a-z]*$', name) is not None)]
-
-
-class _Decoration(
-    tuple[typing.Annotated[str, annotated_types.Predicate(lambda value: re.match(r'^[a-z]*$', value) is not None)], ...]
-):
-
-    @staticmethod
-    def of_name(name: _Name) -> _Decoration:
-        return _Decoration(tuple(re.sub(r'.<.*>', '', name).split('.')))
+Name = typing.Annotated[str, annotated_types.Predicate(lambda name: re.match(r'^[.a-z]*$', name) is not None)]
 
 
-class _Decoratee[** Params, Return](typing.Callable[Params, Return]):
+class Key(
+    tuple[typing.Annotated[
+        str, annotated_types.Predicate(lambda value: re.search(r'^[a-z]*$', value) is not None)
+    ], ...]
+): ...
+
+
+Decoration = Key
+
+
+class Decoratee[** Params, Return](typing.Callable[Params, Return]):
     __call__: typing.Callable[Params, Return]
 
 
-class _Decorated[** Params, Return](_Decoratee[Params, Return]):
-    key: _Decoration
+class Decorated[** Params, Return](Decoratee[Params, Return]):
+    key: Key
 
 
 @dataclasses.dataclass(frozen=True)
-class _Decorator:
-    _name: _Name = ...
+class Decorator:
+    _prefix: Name = ...
+    _suffix: Name = ...
+    _: dataclasses.KW_ONLY = ...
 
-    Decorated: typing.ClassVar[type[_Decorated]] = _Decorated
-    Key: typing.ClassVar[type[_Decoration]] = _Decoration
-    Name: typing.ClassVar[type[_Name]] = _Name
+    Decorated: typing.ClassVar[type[Decorated]] = Decorated
+    Decoration: typing.ClassVar[type[Decoration]] = Decoration
 
-    def __init__(self, _name: _Name = ..., /) -> None:
-        object.__setattr__(self, '_name', _name if _name is ... else re.sub(r'.<.*>', '', _name))
+    Key: typing.ClassVar[type[Key]] = Key
+    Name: typing.ClassVar[type[Name]] = Name
 
-    def __call__[** Params, Return](self, decoratee: _Decoratee[Params, Return], /) -> _Decorated[Params, Return]:
-        decoratee.key = _Decoration.of_name(
-            self._name if self._name is not ... else f'{decoratee.__module__}.{decoratee.__qualname__}'
+    def __call__[** Params, Return](self, decoratee: Decoratee[Params, Return], /) -> Decorated[Params, Return]:
+        if isinstance(getattr(decoratee, 'key', None), Key):
+            decoratee: Decorated[Params, Return]
+            return decoratee
+
+        prefix = self._prefix if self._prefix is not ... else decoratee.__module__
+        suffix = self._suffix if self._prefix is not ... or self._suffix is not ... else re.sub(
+            r'.<.*>', '', decoratee.__qualname__
         )
-        decoratee: _Decorated
+
+        decoratee.key = Decorator(prefix, suffix).key
+
+        decoratee: Decorated[Params, Return]
 
         return decoratee
 
+    @property
+    def key(self) -> Key:
+        return Key(tuple([
+            *([] if self._prefix is ... else re.sub(r'.<.*>', '', self._prefix).split('.')),
+            *([] if self._suffix is ... else re.sub(r'.<.*>', '', self._suffix).split('.')),
+        ]))
 
-Key = _Decorator

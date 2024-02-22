@@ -3,53 +3,58 @@ from __future__ import annotations
 import dataclasses
 import typing
 
-from ._key import Key
+from . import _key
 
 
-type _Registry[T] = dict[Key.Key, T | set[str]]
-
-
-class _Decoratee[** Params, Return](typing.Protocol):
+class Decoratee[** Params, Return](typing.Protocol):
     __call__: typing.Callable[Params, Return]
 
 
+class Decorated[** Params, Return](Decoratee[Params, Return], _key.Decorated):
+    register: Decoration
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _Decoration[** Params, Return]:
-    registry: _Registry[_Decoratee]
+class Register:
+    decorateds: dict[_key.Key, Decorated] = dataclasses.field(default_factory=dict)
+    links: dict[_key.Key, set[_key.Name]] = dataclasses.field(default_factory=dict)
 
 
-class _Decorated[** Params, Return](_Decoratee[Params, Return], Key.Decorated):
-    register: _Decoration[Params, Return]
+Decoration = Register
 
 
-@dataclasses.dataclass(frozen=True, init=False)
-class _Decorator:
-    _name: Key.Name = ...
+@dataclasses.dataclass(frozen=True)
+class Decorator:
+    _prefix: _key.Name = ...
+    _suffix: _key.Name = ...
+    _: dataclasses.KW_ONLY = ...
+    register: Register = ...
 
-    registry: _Registry = ...
+    _default_register: typing.ClassVar[dict[_key.Key, Register]] = Decoration()
 
-    _default_registry: typing.ClassVar[type[_Registry]] = {}
-    Decorated: typing.ClassVar[type[_Decorated]] = _Decorated
-    Decoration: typing.ClassVar[type[_Decoration]] = _Decoration
+    Decorated: typing.ClassVar[type[Decorated]] = Decorated
+    Decoration: typing.ClassVar[type[Decoration]] = Decoration
 
-    def __init__(self, _name: Key.Name = ..., /, registry: _Registry = ...) -> None:
-        object.__setattr__(self, '_name', _name)
-        object.__setattr__(self, 'registry', self._default_registry if registry is ... else registry)
+    def __call__[** Params, Return](self, decoratee: Decoratee[Params, Return], /) -> Decorated[Params, Return]:
+        if isinstance(getattr(decoratee, 'register', None), Decoration):
+            decoratee: Decorated[Params, Return]
+            return decoratee
 
-    def __call__[** Params, Return](self, decoratee: _Decoratee[Params, Return], /) -> _Decorated[Params, Return]:
-        decoratee = Key(self._name)(decoratee)
+        decoratee = _key.Decorator(self._prefix, self._suffix)(decoratee)
+        decoration = self.register if self.register is not ... else self._default_register
 
-        # Create all the registry links that lead up to the entrypoint decoration.
-        for i in range(1, len(decoratee.key)):
-            self.registry.setdefault(decoratee.key[:i], set()).add(decoratee.key[i])
+        # Create all the register links that lead up to the entrypoint decoration.
+        for i in range(len(decoratee.key)):
+            decoration.links.setdefault(decoratee.key[:i], set()).add(decoratee.key[i])
+        decoration.links.setdefault(decoratee.key, set())
 
-        # Add the entrypoint decoration to the registry.
-        self.registry[decoratee.key] = decoratee
+        decoratee.register = decoration
+        decoratee: Decorated[Params, Return]
 
-        decoratee.register = _Decoration[Params, Return](registry=self.registry)
-        decoratee: _Decorated[Params, Return]
+        # Add the entrypoint decoration to the register.
+        decoration.decorateds[decoratee.key] = decoratee
 
         return decoratee
 
-
-Register = _Decorator
+    def get_register(self) -> Register:
+        return self.register if self.register is not ... else self._default_register
