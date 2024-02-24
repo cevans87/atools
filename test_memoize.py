@@ -22,7 +22,7 @@ def get_table_len(db_path: Path) -> int:
 
 @pytest.fixture
 def async_lock() -> MagicMock:
-    with patch.object(test_module.asyncio, 'Lock', side_effect=None) as async_lock:
+    with patch.object(test_module.Async, 'Lock', side_effect=None) as async_lock:
         yield async_lock
 
 
@@ -103,7 +103,7 @@ def test_keyword_same_as_default() -> None:
     body.assert_called_once_with(1, 1)
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async() -> None:
     body = MagicMock()
 
@@ -137,7 +137,7 @@ def test_sync_size() -> None:
     body.assert_called_once_with(0)
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_size() -> None:
     body = MagicMock()
 
@@ -168,7 +168,7 @@ def test_sync_size_with_duration() -> None:
     assert body.call_count == 3
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_size_with_duration() -> None:
     body = MagicMock()
 
@@ -203,7 +203,7 @@ def test_sync_exception() -> None:
     body.assert_called_once()
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_exception() -> None:
     class FooException(Exception):
         ...
@@ -304,7 +304,7 @@ def test_expire_head_of_line_refresh_does_not_stop_eviction(time: MagicMock) -> 
     assert len(foo.memoize) == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_stops_thundering_herd() -> None:
     body = MagicMock()
 
@@ -370,7 +370,7 @@ def test_sync_reset_clears_cache() -> None:
     body.assert_called_once()
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_reset_clears_cache() -> None:
     body = MagicMock()
 
@@ -418,7 +418,7 @@ def test_sync_locks_sync(sync_lock: MagicMock) -> None:
     sync_lock.assert_called()
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_does_not_sync_lock(sync_lock: MagicMock) -> None:
     @atools.Memoize()
     async def foo() -> None:
@@ -428,7 +428,7 @@ async def test_async_does_not_sync_lock(sync_lock: MagicMock) -> None:
     sync_lock.assert_not_called()
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_locks_async(async_lock: MagicMock) -> None:
     async_lock_context = async_lock.return_value = MagicMock()
 
@@ -576,7 +576,7 @@ def test_reset_all_resets_function_decorators() -> None:
     bar_body.assert_called_once()
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_herd_waits_for_return() -> None:
     foo_start_event = Event()
     foo_finish_event = Event()
@@ -597,7 +597,7 @@ async def test_async_herd_waits_for_return() -> None:
     assert foo_a == foo_b
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_memoize_does_not_stop_object_cleanup() -> None:
     class Foo:
         pass
@@ -640,7 +640,7 @@ def test_keygen_overrides_default() -> None:
     body.assert_called_once_with(2, 2)
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_keygen_awaits_awaitable_parts() -> None:
 
     key_part_body = MagicMock()
@@ -854,7 +854,7 @@ def test_reset_call_before_expire_resets_one(time: MagicMock) -> None:
     assert body.call_count == 2
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_remove_removes_call() -> None:
     body = MagicMock()
 
@@ -894,7 +894,7 @@ def test_reset_call_with_db_resets_call(db_path: Path) -> None:
     assert body.call_count == 11
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_keygen_can_return_non_tuple() -> None:
     body = MagicMock()
 
@@ -961,7 +961,7 @@ def test_sync_memo_lifetime_is_lte_arg_with_default_object_hash() -> None:
     assert len(foo.memoize) == 0
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_memo_lifetime_is_lte_arg_with_default_object_hash() -> None:
     # Inherits object.__hash__
     class Bar:
@@ -995,7 +995,7 @@ def test_sync_memo_lifetime_is_lte_keygen_part_with_default_default_hash() -> No
     assert len(foo.memoize) == 0
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_memo_lifetime_is_lte_keygen_part_with_default_default_hash() -> None:
     # Inherits object.__hash__
     class Bar:
@@ -1028,7 +1028,7 @@ def test_sync_memo_lifetime_not_affected_by_arg_with_non_default_hash() -> None:
     assert len(foo.memoize) == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_memo_lifetime_not_affected_by_arg_with_non_default_hash() -> None:
     class Bar:
         def __hash__(self) -> int:
@@ -1061,7 +1061,7 @@ def test_sync_memo_lifetime_lte_keygen_part_with_non_default_hash() -> None:
     assert len(foo.memoize) == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_memo_lifetime_lte_keygen_part_with_non_default_hash() -> None:
     # Inherits object.__hash__
     class Bar:
@@ -1092,7 +1092,7 @@ def test_sync_update_does_not_update_nonexistent_value() -> None:
     assert foo() is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_update_does_not_update_nonexistent_value() -> None:
     body = MagicMock()
 
@@ -1122,7 +1122,7 @@ def test_sync_update_updates_existing_value() -> None:
     assert foo() == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_update_updates_existing_value() -> None:
     body = MagicMock()
 
@@ -1152,7 +1152,7 @@ def test_sync_upsert_upserts_nonexistent_value() -> None:
     assert foo() == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_upsert_upserts_nonexistent_value() -> None:
     body = MagicMock()
 
@@ -1182,7 +1182,7 @@ def test_sync_upsert_upserts_existing_value() -> None:
     assert foo() == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_async_upsert_upserts_existing_value() -> None:
     body = MagicMock()
 

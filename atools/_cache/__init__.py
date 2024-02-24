@@ -11,14 +11,40 @@ import sqlite3
 import textwrap
 import time
 import threading
+import types
 import typing
 import weakref
 
-from . import _context
-from . import _key
+from atools import _context
+from atools import _key
 
 
 Keygen = typing.Callable[..., object]
+
+
+Key = object
+AsyncMemo = object
+SyncMemo = object
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class ContextData[** Params](_context.ContextData[Params]):
+    ...
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class SyncContext[** Params, Return](_context.SyncContext[Params, Return], ContextData[Params]):
+    lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    memos: dict[Key, SyncMemo] = dataclasses.field(default_factory=dict)
+
+    def __call__(self, return_: Return) -> None:
+        ...
+
+    def __enter__(self) -> typing.Self:
+        ...
+
+    def __exit__(self, exc_type: type[BaseException], exc_val: object, exc_tb: types.TracebackType) -> None:
+        ...
 
 
 class Serializer(typing.Protocol):
@@ -35,33 +61,33 @@ class MemoZeroValue:
 
 
 @dataclasses.dataclass
-class MemoReturnState:
+class MemoReturnState_deprecated:
     called: bool = False
     raised: bool = False
     value: object = MemoZeroValue
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class MemoBase:
+class MemoBase_deprecated:
     t0: float | None
-    memo_return_state: MemoReturnState = dataclasses.field(init=False, default_factory=MemoReturnState)
+    memo_return_state: MemoReturnState_deprecated = dataclasses.field(init=False, default_factory=MemoReturnState_deprecated)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncMemo(MemoBase):
+class AsyncMemo_deprecated(MemoBase_deprecated):
     async_lock: asyncio.Lock = dataclasses.field(init=False, default_factory=lambda: asyncio.Lock())
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class SyncMemo(MemoBase):
+class SyncMemo_deprecated(MemoBase_deprecated):
     sync_lock: threading.Lock = dataclasses.field(init=False, default_factory=lambda: threading.Lock())
 
 
-_Memo = AsyncMemo | SyncMemo
+Memo_deprecated = AsyncMemo_deprecated | SyncMemo_deprecated
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class MemoizeBase[** Params, Return]:
+class MemoizeBase_deprecated[** Params, Return]:
     db: sqlite3.Connection | None
     default_kwargs: dict[str, object]
     duration: datetime.timedelta | None
@@ -121,11 +147,7 @@ class MemoizeBase[** Params, Return]:
     @property
     def table_name(self) -> str:
         # noinspection PyUnresolvedReferences
-        return (
-            f'{self.fn.__code__.co_filename}'
-            f':{self.fn.__code__.co_name}'
-            f':{self.fn.__code__.co_firstlineno}'
-        )
+        return '.'.join(self.fn.key)
 
     def bind_key_lifetime(self, raw_key: typing.Tuple[object, ...], key: int | str) -> None:
         for raw_key_part in raw_key:
@@ -143,7 +165,7 @@ class MemoizeBase[** Params, Return]:
             args_as_kwargs[k] = v
         return collections.ChainMap(args_as_kwargs, kwargs, self.default_kwargs)
 
-    def get_memo(self, key: int | str, insert: bool) -> _Memo | None:
+    def get_memo(self, key: int | str, insert: bool) -> Memo_deprecated | None:
         try:
             memo = self.memos[key] = self.memos.pop(key)
             if self.duration is not None and memo.t0 < time.time() - self.duration.total_seconds():
@@ -182,7 +204,7 @@ class MemoizeBase[** Params, Return]:
         if (self.db is not None) and (k is not None):
             self.db.execute(f"DELETE FROM `{self.table_name}` WHERE k = '{k}'")
 
-    def finalize_memo(self, memo: _Memo, key: int | str) -> object:
+    def finalize_memo(self, memo: Memo_deprecated, key: int | str) -> object:
         if memo.memo_return_state.raised:
             raise memo.memo_return_state.value
         elif (self.db is not None) and (self.memos[key] is memo):
@@ -212,7 +234,7 @@ class MemoizeBase[** Params, Return]:
         return key
 
     @staticmethod
-    def make_memo(t0: float | None) -> _Memo:  # pragma: no cover
+    def make_memo(t0: float | None) -> Memo_deprecated:  # pragma: no cover
         raise NotImplemented
 
     def reset(self) -> None:
@@ -231,7 +253,7 @@ class MemoizeBase[** Params, Return]:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncDecoration[** Params, Return](MemoizeBase[Params, Return]):
+class AsyncDecoration_deprecated[** Params, Return](MemoizeBase_deprecated[Params, Return]):
 
     async def get_raw_key(self, *args, **kwargs) -> typing.Tuple[typing.Hashable, ...]:
         if self.keygen is None:
@@ -258,7 +280,7 @@ class AsyncDecoration[** Params, Return](MemoizeBase[Params, Return]):
                 raw_key = await self.get_raw_key(*args, **kwargs)
                 key = self.get_key(raw_key)
 
-                memo: AsyncMemo = self.get_memo(key, insert=insert)
+                memo: AsyncMemo_deprecated = self.get_memo(key, insert=insert)
                 if memo is None:
                     return await fn(*args, **kwargs)
 
@@ -321,12 +343,12 @@ class AsyncDecoration[** Params, Return](MemoizeBase[Params, Return]):
         return decorator
 
     @staticmethod
-    def make_memo(t0: float | None) -> AsyncMemo:
-        return AsyncMemo(t0=t0)
+    def make_memo(t0: float | None) -> AsyncMemo_deprecated:
+        return AsyncMemo_deprecated(t0=t0)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class SyncDecoration[** Params, Return](MemoizeBase[Params, Return]):
+class SyncDecoration_deprecated[** Params, Return](MemoizeBase_deprecated[Params, Return]):
 
     _sync_lock: threading.Lock = dataclasses.field(init=False, default_factory=lambda: threading.Lock())
 
@@ -350,7 +372,7 @@ class SyncDecoration[** Params, Return](MemoizeBase[Params, Return]):
                 key = self.get_key(raw_key)
 
                 with self._sync_lock:
-                    memo: SyncMemo = self.get_memo(key, insert=insert)
+                    memo: SyncMemo_deprecated = self.get_memo(key, insert=insert)
                     if memo is None:
                         return fn(*args, **kwargs)
 
@@ -414,8 +436,8 @@ class SyncDecoration[** Params, Return](MemoizeBase[Params, Return]):
         return decorator
 
     @staticmethod
-    def make_memo(t0: float | None) -> SyncMemo:
-        return SyncMemo(t0=t0)
+    def make_memo(t0: float | None) -> SyncMemo_deprecated:
+        return SyncMemo_deprecated(t0=t0)
 
     def reset(self) -> None:
         with self._sync_lock:
@@ -426,26 +448,32 @@ class SyncDecoration[** Params, Return](MemoizeBase[Params, Return]):
             super().reset_key(key)
 
 
-type Decoration[** Params, Return] = AsyncDecoration[Params, Return] | SyncDecoration[Params, Return]
+type Decoration_deprecated[** Params, Return] = AsyncDecoration_deprecated[Params, Return] | SyncDecoration_deprecated[Params, Return]
 
 
-class AsyncDecoratee[** Params, Return](typing.Protocol):
-    __call__: typing.Callable[Params, Return]
-
-
-class SyncDecoratee[** Params, Return](typing.Protocol):
-    __call__: typing.Callable[Params, Return]
-
-
+type AsyncDecoratee[** Params, Return] = typing.Callable[Params, typing.Awaitable[Return]]
+type SyncDecoratee[** Params, Return] = typing.Callable[Params, Return]
 type Decoratee[** Params, Return] = AsyncDecoratee[Params, Return] | SyncDecoratee[Params, Return]
 
 
-class AsyncDecorated[** Params, Return](AsyncDecoratee[Params, Return], _context.AsyncDecorated):
-    memoize: Decoration[Params, Return]
+@dataclasses.dataclass(kw_only=True)
+class AsyncDecoratedData[** Params, Return](_context.AsyncDecoratedData[Params, Return]):
+    memoize: Decoration_deprecated[Params, Return]
 
 
-class SyncDecorated[** Params, Return](SyncDecoratee[Params, Return], _context.SyncDecorated):
-    memoize: Decoration[Params, Return]
+@dataclasses.dataclass(kw_only=True)
+class AsyncDecorated[** Params, Return](AsyncDecoratedData[Params, Return]):
+    __call__: typing.Callable[Params, typing.Awaitable[Return]]
+
+
+@dataclasses.dataclass(kw_only=True)
+class SyncDecoratedData[** Params, Return](_context.SyncDecoratedData[Params, Return]):
+    memoize: Decoration_deprecated[Params, Return]
+
+
+@dataclasses.dataclass(kw_only=True)
+class SyncDecorated[** Params, Return](SyncDecoratedData[Params, Return]):
+    __call__: typing.Callable[Params, Return]
 
 
 type Decorated[** Params, Return] = AsyncDecorated[Params, Return] | SyncDecorated[Params, Return]
@@ -723,6 +751,7 @@ class Decorator:
 
     _prefix: _key.Name = ...
     _suffix: _key.Name = ...
+    _: dataclasses.KW_ONLY = ...
     db_path: pathlib.Path | None = None
     duration: int | float | datetime.timedelta | None = None
     keygen: Keygen | None = None
@@ -743,6 +772,7 @@ class Decorator:
 
     def __call__[** Params, Return](self, decoratee: Decoratee[Params, Return], /) -> Decorated[Params, Return]:
         decoratee = _key.Decorator(self._prefix, self._suffix)(decoratee)
+        decoratee = _context.Decorator(self._prefix, self._suffix)(decoratee)
 
         db = sqlite3.connect(f'{self.db_path}') if self.db_path is not None else None
         duration = datetime.timedelta(seconds=self.duration) if isinstance(
@@ -756,9 +786,9 @@ class Decorator:
         }
 
         if inspect.iscoroutinefunction(decoratee):
-            decoration_cls = AsyncDecoration
+            decoration_cls = AsyncDecoration_deprecated[Params, Return]
         else:
-            decoration_cls = SyncDecoration
+            decoration_cls = SyncDecoration_deprecated[Params, Return]
 
         # noinspection PyArgumentList
         decorator = decoration_cls(

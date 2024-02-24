@@ -58,7 +58,7 @@ def test_size_limits_sync_concurrency_to_size(time: MagicMock) -> None:
     assert foo.rate.running == 0
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_size_limits_async_concurrency_to_size(time: MagicMock) -> None:
     async_event_0 = AsyncEvent()
     async_event_1 = AsyncEvent()
@@ -93,7 +93,7 @@ def test_duration_causes_sync_waiter_to_sleep(sync_sleep: MagicMock, time: Magic
     sync_sleep.assert_called_once_with(10)
 
 
-@pytest.mark.asyncio
+@pytest.mark.Async
 async def test_duration_causes_async_waiter_to_sleep(
         async_sleep: MagicMock, time: MagicMock
 ) -> None:

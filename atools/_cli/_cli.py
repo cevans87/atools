@@ -460,12 +460,24 @@ class Decoration[** Params, Return]:
         return result
 
 
-class Decoratee[** Params, Return](typing.Callable[Params, Return]):
+type AsyncDecoratee[** Params, Return] = typing.Callable[Params, typing.Awaitable[Return]]
+type SyncDecoratee[** Params, Return] = typing.Callable[Params, Return]
+type Decoratee[** Params, Return] = AsyncDecoratee[Params, Return] | SyncDecoratee[Params, Return]
+
+
+class DecoratedBase:
+    cli: CLI
+
+
+class AsyncDecorated[** Params, Return](DecoratedBase):
+    __call__: typing.Callable[Params, typing.Awaitable[Return]]
+
+
+class SyncDecorated[** Params, Return](DecoratedBase):
     __call__: typing.Callable[Params, Return]
 
 
-class Decorated[** Params, Return](Decoratee[Params, Return], _register.Decorated):
-    cli: Decoration[Params, Return]
+type Decorated[** Params, Return] = AsyncDecorated[Params, Return] | SyncDecorated[Params, Return]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -517,6 +529,16 @@ class Decorator:
     Persist: typing.ClassVar[type[_Persist]] = _Persist
     SideEffect: typing.ClassVar[type[_SideEffect]] = _SideEffect
 
+    @typing.overload
+    def __call__[** Params, Return](
+        self, decoratee: AsyncDecoratee[Params, Return], /
+    ) -> AsyncDecorated[Params, Return]: ...
+
+    @typing.overload
+    def __call__[** Params, Return](
+        self, decoratee: SyncDecoratee[Params, Return], /
+    ) -> SyncDecorated[Params, Return]: ...
+
     def __call__[** Params, Return](self, decoratee: Decoratee[Params, Return], /) -> Decorated[Params, Return]:
         decoratee = _register.Decorator(self._prefix, self._suffix)(decoratee)
 
@@ -535,7 +557,7 @@ class Decorator:
         key = _key.Decorator(self._prefix, self._suffix).key
 
         if (
-            ((decorated := register.decorateds.get(key)) is None)
+            ((decorated := register.decoratees.get(key)) is None)
             or not (isinstance(getattr(decorated, 'cli', None), Decoration))
         ):
             @Decorator('.'.join(key))
@@ -559,6 +581,3 @@ class Decorator:
             key = tuple([*key, args.pop(0)])
 
         return Decorator('.'.join(key)).cli.run(args)
-
-
-CLI = Decorator
