@@ -16,7 +16,7 @@ import typing
 import weakref
 
 from atools import _context
-from atools import _key
+from atools import bofdsfdfsa
 
 
 Keygen = typing.Callable[..., object]
@@ -749,8 +749,8 @@ class Decorator:
         ```
     """
 
-    _prefix: _key.Name = ...
-    _suffix: _key.Name = ...
+    _prefix: bofdsfdfsa.Name = ...
+    _suffix: bofdsfdfsa.Name = ...
     _: dataclasses.KW_ONLY = ...
     db_path: pathlib.Path | None = None
     duration: int | float | datetime.timedelta | None = None
@@ -771,7 +771,7 @@ class Decorator:
     ) -> SyncDecorated[Params, Return]: ...
 
     def __call__[** Params, Return](self, decoratee: Decoratee[Params, Return], /) -> Decorated[Params, Return]:
-        decoratee = _key.Decorator(self._prefix, self._suffix)(decoratee)
+        decoratee = bofdsfdfsa.Decorator(self._prefix, self._suffix)(decoratee)
         decoratee = _context.Decorator(self._prefix, self._suffix)(decoratee)
 
         db = sqlite3.connect(f'{self.db_path}') if self.db_path is not None else None

@@ -41,6 +41,7 @@ Multiple-entrypoint example:
 
 """
 from __future__ import annotations
+import abc
 import annotated_types
 import argparse
 import ast
@@ -194,8 +195,8 @@ class _AddArgument[T]:
         if add_argument.name_or_flags is ...:
             match parameter.kind, parameter.default == parameter.empty:
                 case (
-                    (parameter.POSITIONAL_ONLY, _)
-                    | ((parameter.VAR_POSITIONAL | parameter.POSITIONAL_OR_KEYWORD), True)
+                (parameter.POSITIONAL_ONLY, _)
+                | ((parameter.VAR_POSITIONAL | parameter.POSITIONAL_OR_KEYWORD), True)
                 ):
                     add_argument = dataclasses.replace(add_argument, name_or_flags=[parameter.name])
                 case (parameter.KEYWORD_ONLY, _) | (parameter.POSITIONAL_OR_KEYWORD, False):
@@ -333,6 +334,25 @@ class _Persist[** Params, Return]:
     # TODO: Make a sticky flag that memoizes a flag.
 
 
+@typing.final
+class CLI[** Params, Return]:
+
+    @dataclasses.dataclass(kw_only=True)
+    class Base:
+        ...
+
+    @dataclasses.dataclass(kw_only=True)
+    class Async(Base):
+        decoratee: Decoratee[Params, Return].Async
+
+    @dataclasses.dataclass(kw_only=True)
+    class Multi(Base):
+        decoratee: Decoratee[Params, Return].Multi
+
+    class Top(Async, Multi):
+        ...
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Decoration[** Params, Return]:
     """CLI decoration attached to decorated entrypoint at `<entrypoint>.cli`.
@@ -460,28 +480,51 @@ class Decoration[** Params, Return]:
         return result
 
 
-type AsyncDecoratee[** Params, Return] = typing.Callable[Params, typing.Awaitable[Return]]
-type SyncDecoratee[** Params, Return] = typing.Callable[Params, Return]
-type Decoratee[** Params, Return] = AsyncDecoratee[Params, Return] | SyncDecoratee[Params, Return]
+@typing.final
+class Decoratee[** Params, Return](abc.ABC):
+
+    @typing.runtime_checkable
+    class Async(typing.Protocol):
+        async def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return: ...
+
+    @typing.runtime_checkable
+    class Multi(typing.Protocol):
+        def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return: ...
+
+    @typing.runtime_checkable
+    class Top(Async, Multi):
+
+        @typing.overload
+        async def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return: ...
+
+        @typing.overload
+        def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return: ...
+
+        def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return | typing.Awaitable[Return]: ...
 
 
-class DecoratedBase:
-    cli: CLI
+@typing.final
+class Decorated[** Params, Return](abc.ABC):
 
+    @typing.runtime_checkable
+    class Base(typing.Protocol):
+        cli: CLI.Base
 
-class AsyncDecorated[** Params, Return](DecoratedBase):
-    __call__: typing.Callable[Params, typing.Awaitable[Return]]
+    @typing.runtime_checkable
+    class Async(Decoratee[Params, Return].Async, Base, typing.Protocol):
+        ...
 
+    @typing.runtime_checkable
+    class Multi(Decoratee[Params, Return].Multi, Base, typing.Protocol):
+        ...
 
-class SyncDecorated[** Params, Return](DecoratedBase):
-    __call__: typing.Callable[Params, Return]
-
-
-type Decorated[** Params, Return] = AsyncDecorated[Params, Return] | SyncDecorated[Params, Return]
+    @typing.runtime_checkable
+    class Top(Decoratee[Params, Return].Top, Async, Multi, typing.Protocol):
+        ...
 
 
 @dataclasses.dataclass(frozen=True)
-class Decorator:
+class Decorator[** Params, Return]:
     """Decorate a function, adding `.cli` attribute.
 
     The `.cli.run` function parses command line arguments (e.g. `sys.argv[1:]`) and executes the decorated function with
@@ -530,17 +573,13 @@ class Decorator:
     SideEffect: typing.ClassVar[type[_SideEffect]] = _SideEffect
 
     @typing.overload
-    def __call__[** Params, Return](
-        self, decoratee: AsyncDecoratee[Params, Return], /
-    ) -> AsyncDecorated[Params, Return]: ...
+    def __call__(self, decoratee: Decoratee[Params, Return].Async, /) -> Decorated[Params, Return].Async: ...
 
     @typing.overload
-    def __call__[** Params, Return](
-        self, decoratee: SyncDecoratee[Params, Return], /
-    ) -> SyncDecorated[Params, Return]: ...
+    def __call__(self, decoratee: Decoratee[Params, Return].Multi, /) -> Decorated[Params, Return].Multi: ...
 
-    def __call__[** Params, Return](self, decoratee: Decoratee[Params, Return], /) -> Decorated[Params, Return]:
-        decoratee = _register.Decorator(self._prefix, self._suffix)(decoratee)
+    def __call__(self, decoratee: Decoratee[Params, Return].Top, /) -> Decorated[Params, Return].Top:
+        decoratee = _register.Decorator[Params, Return].Top(self._prefix, self._suffix)(decoratee)
 
         decoratee.cli = Decoration[Params, Return](decoratee=decoratee)
         decoratee: Decorated[Params, Return]
@@ -553,14 +592,14 @@ class Decorator:
 
     @property
     def cli(self) -> Decoration:
-        register = _register.Decorator(self._prefix, self._suffix).get_register()
-        key = _key.Decorator(self._prefix, self._suffix).key
+        register = _register.Decorator[Params, Return].Top(self._prefix, self._suffix).register
+        key = _key.Decorator[Params, Return].Top(self._prefix, self._suffix).key
 
         if (
-            ((decorated := register.decoratees.get(key)) is None)
+            ((decorated := register.decorateds.get(key)) is None)
             or not (isinstance(getattr(decorated, 'cli', None), Decoration))
         ):
-            @Decorator('.'.join(key))
+            @Decorator[Params, Return].Top('.'.join(key))
             def decoratee(subcommand: typing.Literal[*sorted(register.links.get(key, set()))]) -> None:  # noqa
                 self.parser.print_usage()
 
@@ -574,7 +613,7 @@ class Decorator:
 
     def run(self, args: typing.Sequence[str] = ...) -> object:
         args = sys.argv[1:] if args is ... else args
-        register = _register.Decorator(self._prefix, self._suffix).get_register()
+        register = _register.Decorator[Params, Return].Top(self._prefix, self._suffix).get_register()
         key = _key.Decorator(self._prefix, self._suffix).key
 
         while args and (tuple([*key, args[0]]) in register.links):
