@@ -6,5 +6,5 @@ def test_register() -> None:
     def foo():
         ...
 
-    assert foo.key in foo.register.decorateds
+    assert foo.key in foo.register.decoratees
     assert foo.key in foo.register.links

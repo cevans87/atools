@@ -5,57 +5,48 @@ import dataclasses
 import re
 import typing
 
+from . import _decoratee
 
-@typing.final
-class Name(abc.ABC):
-    type Base = typing.Annotated[str, annotated_types.Predicate(str.isidentifier)]  # noqa
-    type Async = Name.Base
-    type Multi = Name.Base
-    type Top = Name.Async | Name.Multi
-    ...
+type Key = tuple[typing.Annotated[str, annotated_types.Predicate(str.isidentifier)], ...]  # noqa
+type Name = typing.Annotated[str, annotated_types.Predicate(str.isidentifier)]  # noqa
 
 
-@typing.final
-class Key(abc.ABC):
-    type Base = tuple[typing.Annotated[str, annotated_types.Predicate(str.isidentifier)], ...]  # noqa
-    type Async = Key.Base
-    type Multi = Key.Base
-    type Top = Key.Async | Key.Multi
-    ...
+Decoratee = _decoratee.Decorated
 
 
 @typing.final
-class Decoratee[** Params, Return](abc.ABC):
-    type Async = typing.Callable[Params, typing.Awaitable[Return]]
-    type Multi = typing.Callable[Params, Return]
-    type Top = Decoratee[Params, Return].Async | Decoratee[Params, Return].Multi
-    ...
+class Decorated(abc.ABC):
 
-
-@typing.final
-class Decorated[** Params, Return](abc.ABC):
     @typing.runtime_checkable
-    class Base(typing.Protocol):
-        key: Key.Top
-    type Async = Decorated[Params, Return].Base
-    type Multi = Decorated[Params, Return].Base
-    type Top = Decorated[Params, Return].Async | Decorated[Params, Return].Multi
-    ...
+    class Base[** Params, Return](typing.Protocol):
+        key: Key
+
+    @typing.runtime_checkable
+    class Async[** Params, Return](Base[Params, Return], typing.Protocol):
+        __call__: typing.Callable[Params, typing.Awaitable[Return]]
+
+    @typing.runtime_checkable
+    class Multi[** Params, Return](Base[Params, Return], typing.Protocol):
+        __call__: typing.Callable[Params, Return]
+
+    @typing.runtime_checkable
+    class Top[** Params, Return](Async[Params, Return], Multi[Params, Return], typing.Protocol):
+        __call__: typing.Callable[Params, typing.Awaitable[Return] | Return]
 
 
 type Decoration = Key
 
 
 @typing.final
-class Decorator[** Params, Return](abc.ABC):
+class Decorator(abc.ABC):
 
     @dataclasses.dataclass(frozen=True)
-    class Base:
+    class Base[** Params, Return]:
         _prefix: Name = ...
         _suffix: Name = ...
 
-        def __call__(self, decoratee: Decoratee[Params, Return].Base, /) -> Decorated[Params, Return].Base:
-            if not isinstance(decoratee, Decorated[Params, Return].Base):
+        def __call__(self, decoratee: Decoratee.Base[Params, Return], /) -> Decorated.Base[Params, Return]:
+            if not isinstance(decoratee, Decorated.Base):
                 prefix = self._prefix if self._prefix is not ... else decoratee.__module__
                 suffix = self._suffix if self._prefix is not ... or self._suffix is not ... else re.sub(
                     r'.<.*>', '', decoratee.__qualname__
@@ -65,26 +56,33 @@ class Decorator[** Params, Return](abc.ABC):
                     *([] if prefix is ... else re.sub(r'.<.*>', '', prefix).split('.')),
                     *([] if suffix is ... else re.sub(r'.<.*>', '', suffix).split('.')),
                 ])
-                decoratee: Decorated[Params, Return].Top
+                decoratee: Decorated.Top[Params, Return]
 
-            decorated: Decorated[Params, Return].Top = decoratee
+            decorated: Decorated.Top[Params, Return] = decoratee
 
             return decorated
 
-    class Async(Base):
-        __call__: typing.Callable[[Decoratee[Params, Return].Async], Decorated[Params, Return].Async]
+        @property
+        def key(self) -> Key:
+            return tuple([
+                *([] if self._prefix is ... else re.sub(r'.<.*>', '', self._prefix).split('.')),
+                *([] if self._suffix is ... else re.sub(r'.<.*>', '', self._suffix).split('.')),
+            ])
 
-    class Multi(Base):
-        __call__: typing.Callable[[Decoratee[Params, Return].Multi], Decorated[Params, Return].Multi]
+    class Async[** Params, Return](Base[Params, Return]):
+        __call__: typing.Callable[[Decoratee.Async[Params, Return]], Decorated.Async[Params, Return]]
+
+    class Multi[** Params, Return](Base[Params, Return]):
+        __call__: typing.Callable[[Decoratee.Multi[Params, Return]], Decorated.Multi[Params, Return]]
 
     @dataclasses.dataclass(frozen=True)
-    class Top(Async, Multi):
+    class Top[** Params, Return](Async[Params, Return], Multi[Params, Return]):
 
         @typing.overload
-        def __call__(self, decoratee: Decoratee[Params, Return].Async, /) -> Decorated[Params, Return].Async: ...
+        def __call__(self, decoratee: Decoratee.Async[Params, Return], /) -> Decorated.Async[Params, Return]: ...
 
         @typing.overload
-        def __call__(self, decoratee: Decoratee[Params, Return].Multi, /) -> Decorated[Params, Return].Multi: ...
+        def __call__(self, decoratee: Decoratee.Multi[Params, Return], /) -> Decorated.Multi[Params, Return]: ...
 
-        def __call__(self, decoratee: Decoratee[Params, Return].Top, /) -> Decorated[Params, Return].Top:
+        def __call__(self, decoratee: Decoratee.Top[Params, Return], /) -> Decorated.Top[Params, Return]:
             return super().__call__(decoratee)

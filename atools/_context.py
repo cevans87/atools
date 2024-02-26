@@ -6,60 +6,60 @@ import functools
 import inspect
 import typing
 
+from ._decoratee import Decorated as Decoratee
+
 
 @typing.final
-class State[** Params, Return](abc.ABC):
+class State(abc.ABC):
 
     @dataclasses.dataclass(frozen=True, kw_only=True)
-    class Base:
+    class Base[** Params, Return](abc.ABC):
         args: Params.args = ...
         kwargs: Params.kwargs = ...
         return_: Return = ...
 
-    class Async(Base):
+    @dataclasses.dataclass(frozen=True, kw_only=True)
+    class Async[** Params, Return](Base[Params, Return], contextlib.AbstractAsyncContextManager, abc.ABC):
         ...
-
-    class Multi(Base):
-        ...
-
-    class Top(Async, Multi):
-        ...
-
-
-@typing.final
-class Context[** Params, Return](abc.ABC):
 
     @dataclasses.dataclass(frozen=True, kw_only=True)
-    class Base:
-        states: list[State[Params, Return].Base] = dataclasses.field(default_factory=list)
-        decoratee: Decoratee[Params, Return].Base
-
-    class Async(Base):
+    class Multi[** Params, Return](Base[Params, Return], contextlib.AbstractContextManager, abc.ABC):
         ...
 
-    class Multi(Base):
-        ...
-
-    class Top(Async, Multi):
+    @dataclasses.dataclass(frozen=True, kw_only=True)
+    class Top[** Params, Return](Async[Params, Return], Multi[Params, Return], abc.ABC):
         ...
 
 
 @typing.final
-class Decoratee[** Params, Return](abc.ABC):
-    type Async = typing.Callable[Params, typing.Awaitable[Return]]
-    type Multi = typing.Callable[Params, Return]
-    type Top = Decoratee[Params, Return].Async | Decoratee[Params, Return].Multi
-    ...
+class Decoration(abc.ABC):
+
+    @dataclasses.dataclass(frozen=True, kw_only=True)
+    class Base[** Params, Return]:
+        decoratee: Decoratee.Top[Params, Return]
+        states: list[State.Top[Params, Return]] = dataclasses.field(default_factory=list)
+
+    class Async[** Params, Return](Base[Params, Return]):
+        ...
+
+    class Multi[** Params, Return](Base[Params, Return]):
+        ...
+
+    class Top[** Params, Return](Async[Params, Return], Multi[Params, Return]):
+        ...
+
+
+Context = Decoration
 
 
 @typing.final
-class Decorated[** Params, Return](abc.ABC):
+class Decorated(abc.ABC):
 
     @dataclasses.dataclass(kw_only=True)
-    class Base:
-        context: Context[Params, Return].Base
+    class Base[** Params, Return]:
+        context: Context.Top[Params, Return]
 
-    class Async(Base):
+    class Async[** Params, Return](Base[Params, Return]):
         async def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return:
             async with contextlib.AsyncExitStack() as stack:
                 states = [
@@ -74,7 +74,7 @@ class Decorated[** Params, Return](abc.ABC):
 
             return return_
 
-    class Multi(Base):
+    class Multi[** Params, Return](Base[Params, Return]):
         def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return:
             with contextlib.ExitStack() as stack:
                 states = [
@@ -89,49 +89,49 @@ class Decorated[** Params, Return](abc.ABC):
 
             return return_
 
-    class Top(Async, Multi):
-        ...
+    type Top[** Params, Return] = Decorated.Async[Params, Return] | Decorated.Multi[Params, Return]
+    ...
 
 
 @typing.final
-class Decorator[** Params, Return](abc.ABC):
+class Decorator(abc.ABC):
 
     @dataclasses.dataclass(frozen=True)
-    class Base:
+    class Base[** Params, Return]:
         ...
 
-    class Async(Base):
-        def __call__(self, decoratee: Decoratee[Params, Return].Async, /) -> Decorated[Params, Return].Async:
-            if not isinstance(decoratee, Decorated[Params, Return].Async):
-                decoratee = inspect.markcoroutinefunction(Decorated[Params, Return].Async(
-                    context=Context[Params, Return].Async(decoratee=decoratee)
+    class Async[** Params, Return](Base[Params, Return]):
+        def __call__(self, decoratee: Decoratee.Async[Params, Return], /) -> Decorated.Async[Params, Return]:
+            if not isinstance(decoratee, Decorated.Async):
+                decoratee = inspect.markcoroutinefunction(Decorated.Async[Params, Return](
+                    context=Context.Async[Params, Return](decoratee=decoratee)
                 ))
 
-            decorated: Decorated[Params, Return].Top = decoratee
+            decorated: Decorated.Top[Params, Return] = decoratee
 
             return decorated
 
-    class Multi(Base):
-        def __call__(self, decoratee: Decoratee[Params, Return].Multi, /) -> Decorated[Params, Return].Multi:
-            if not isinstance(decoratee, Decorated[Params, Return].Multi):
-                decoratee = functools.wraps(decoratee)(inspect.markcoroutinefunction(Decorated[Params, Return].Multi(
-                    context=Context[Params, Return].Multi(decoratee=decoratee)
+    class Multi[** Params, Return](Base[Params, Return]):
+        def __call__(self, decoratee: Decoratee.Multi[Params, Return], /) -> Decorated.Multi[Params, Return]:
+            if not isinstance(decoratee, Decorated.Multi):
+                decoratee = functools.wraps(decoratee)(inspect.markcoroutinefunction(Decorated.Multi[Params, Return](
+                    context=Context.Multi[Params, Return](decoratee=decoratee)
                 )))
 
-            decorated: Decorated[Params, Return].Top = decoratee
+            decorated: Decorated.Top[Params, Return] = decoratee
 
             return decorated
 
-    class Top(Async, Multi):
+    class Top[** Params, Return](Async[Params, Return], Multi[Params, Return]):
 
         @typing.overload
-        def __call__(self, decoratee: Decoratee[Params, Return].Async, /) -> Decorated[Params, Return].Async: ...
+        def __call__(self, decoratee: Decoratee.Async[Params, Return], /) -> Decorated.Async[Params, Return]: ...
 
         @typing.overload
-        def __call__(self, decoratee: Decoratee[Params, Return].Multi, /) -> Decorated[Params, Return].Multi: ...
+        def __call__(self, decoratee: Decoratee.Multi[Params, Return], /) -> Decorated.Multi[Params, Return]: ...
 
-        def __call__(self, decoratee: Decoratee[Params, Return].Top, /) -> Decorated[Params, Return].Top:
+        def __call__(self, decoratee: Decoratee.Top[Params, Return], /) -> Decorated.Top[Params, Return]:
             if inspect.iscoroutinefunction(decoratee):
-                return Decorator[Params, Return].Async.__call__(self, decoratee)
+                return Decorator.Async.__call__(self, decoratee)
             else:
-                return Decorator[Params, Return].Multi.__call__(self, decoratee)
+                return Decorator.Multi.__call__(self, decoratee)
