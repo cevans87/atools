@@ -1,6 +1,6 @@
-from . import _cli, _context, _key, _register
+from . import _base, _cli, _key, _register
 
 CLI = _cli.Decorator.Top
-Context = _context.Decorator.Top
+#Base = _base.Decorator
 Key = _key.Decorator.Top
 Register = _register.Decorator.Top

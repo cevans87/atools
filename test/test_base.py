@@ -1,8 +1,8 @@
 import atools
 
 
-def test_context() -> None:
-    @atools.Context()
+def test_base() -> None:
+    @atools.Base()
     def foo():
         ...
 

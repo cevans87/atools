@@ -339,21 +339,22 @@ Decoratee = _decoratee.Decorated
 
 
 @typing.final
-class Decoration[** Params, Return]:
+class Decoration:
 
     @dataclasses.dataclass(kw_only=True)
-    class Base:
+    class Base[** Params, Return]:
         ...
 
     @dataclasses.dataclass(kw_only=True)
-    class Async(Base):
-        decoratee: Decoratee[Params, Return].Async
+    class Async[** Params, Return](Base[Params, Return]):
+        decoratee: Decoratee.Async[Params, Return]
 
     @dataclasses.dataclass(kw_only=True)
-    class Multi(Base):
-        decoratee: Decoratee[Params, Return].Multi
+    class Multi[** Params, Return](Base[Params, Return]):
+        decoratee: Decoratee.Multi[Params, Return]
 
-    class Top(Async, Multi):
+    @dataclasses.dataclass(kw_only=True)
+    class Top[** Params, Return](Async[Params, Base], Multi[Params, Return]):
         ...
 
 

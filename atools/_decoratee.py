@@ -5,7 +5,18 @@ import typing
 @typing.final
 class Decorated(abc.ABC):
 
-    type Async[** Params, Return] = typing.Callable[Params, typing.Awaitable[Return]]
-    type Multi[** Params, Return] = typing.Callable[Params, Return]
-    type Top[** Params, Return] = Decorated.Async[Params, Return] | Decorated.Multi[Params, Return]
-    ...
+    @typing.runtime_checkable
+    class Base[** Params, Return](typing.Protocol):
+        decoratee: typing.Callable[[...], ...]
+
+    @typing.runtime_checkable
+    class Async[** Params, Return](Base[Params, Return], typing.Protocol):
+        decoratee: typing.Callable[Params, typing.Awaitable[Return]]
+
+    @typing.runtime_checkable
+    class Multi[** Params, Return](Base[Params, Return], typing.Protocol):
+        decoratee: typing.Callable[Params, Return]
+
+    @typing.runtime_checkable
+    class Top[** Params, Return](Async[Params, Return], Multi[Params, Return], typing.Protocol):
+        decoratee: typing.Callable[Params, typing.Awaitable[Return] | Return]

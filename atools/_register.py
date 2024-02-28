@@ -14,8 +14,8 @@ class Register(abc.ABC):
     #  annotations.
     @dataclasses.dataclass(frozen=True, kw_only=True)
     class Base:
-        decoratees: dict[_key.Key, Decoratee.Top] = dataclasses.field(default_factory=dict)
-        links: dict[_key.Key, set[_key.Name]] = dataclasses.field(default_factory=dict)
+        decoratees: dict[_key.Decoration.Top, Decoratee.Top] = dataclasses.field(default_factory=dict)
+        links: dict[_key.Decoration.Top, set[_key.Name]] = dataclasses.field(default_factory=dict)
 
     class Async(Base):
         ...
