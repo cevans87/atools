@@ -3,99 +3,63 @@ import abc
 import dataclasses
 import typing
 
-from . import _decoratee, _key
+from . import _base, _key
 
 
-@typing.final
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class Register(abc.ABC):
-
-    # The lack of type parameters for the following classes is intentional. Base.decoratees may hold decoratees with any
-    #  kind of params and return, and allowing type narrowing with parameterization here would lead to incorrect
-    #  annotations.
-    @dataclasses.dataclass(frozen=True, kw_only=True)
-    class Base:
-        decoratees: dict[_key.Decoration.Top, Decoratee.Top] = dataclasses.field(default_factory=dict)
-        links: dict[_key.Decoration.Top, set[_key.Name]] = dataclasses.field(default_factory=dict)
-
-    class Async(Base):
-        ...
-
-    class Multi(Base):
-        ...
-
-    class Top(Async, Multi):
-        ...
+    decoratees: dict[_key.Key, _base.Decoratee] = dataclasses.field(default_factory=dict)
+    links: dict[_key.Key, set[_key.Name]] = dataclasses.field(default_factory=dict)
 
 
-Decoratee = _decoratee.Decorated
+@typing.runtime_checkable
+class Decorated[** Params, Return](_key.Decorated[Params, Return], typing.Protocol):
+    register: Register
 
 
-@typing.final
-class Decorated(abc.ABC):
-
-    @typing.runtime_checkable
-    class Base[** Params, Return](typing.Protocol):
-        registry: Register.Base
-
-    @typing.runtime_checkable
-    class Async[** Params, Return](Base[Params, Return], typing.Protocol):
-        ...
-
-    @typing.runtime_checkable
-    class Multi[** Params, Return](Base[Params, Return], typing.Protocol):
-        ...
-
-    @typing.runtime_checkable
-    class Top[** Params, Return](Async[Params, Return], Multi[Params, Return], typing.Protocol):
-        ...
+@typing.runtime_checkable
+class AsyncDecorated[** Params, Return](
+    Decorated[Params, Return], _key.AsyncDecorated[Params, Return], typing.Protocol
+):
+    ...
 
 
-type Decoration = Register
+@typing.runtime_checkable
+class MultiDecorated[** Params, Return](
+    Decorated[Params, Return], _key.MultiDecorated[Params, Return], typing.Protocol
+):
+    ...
 
 
-@typing.final
-class Decorator(abc.ABC):
+@dataclasses.dataclass(frozen=True)
+class Decorator[**Params, Return](_key.Decorator[Params, Return]):
+    register: Register = Register()
 
-    @dataclasses.dataclass(frozen=True)
-    class Base[** Params, Return](_key.Decorator.Base[Params, Return], abc.ABC):
-        register: Register.Top = Register.Base()
+    @typing.overload
+    def __call__(
+        self, decoratee: _base.AsyncDecoratee[Params, Return], /
+    ) -> AsyncDecorated[Params, Return]: ...
 
-        @typing.overload
-        def __call__(self, decoratee: Decoratee.Async[Params, Return], /) -> Decorated.Async[Params, Return]: ...
+    @typing.overload
+    def __call__(
+        self, decoratee: _base.MultiDecoratee[Params, Return], /
+    ) -> MultiDecorated[Params, Return]: ...
 
-        @typing.overload
-        def __call__(self, decoratee: Decoratee.Multi[Params, Return], /) -> Decorated.Multi[Params, Return]: ...
+    def __call__(
+        self, decoratee: _base.Decoratee[Params, Return], /
+    ) -> Decorated[Params, Return]:
+        assert not isinstance(decoratee, Decorated)
+        if not isinstance(decoratee, _key.Decorated):
+            decoratee = _key.Decorator()(decoratee)
 
-        def __call__(self, decoratee: Decoratee.Top[Params, Return], /) -> Decorated.Top[Params, Return]:
-            if not isinstance(decoratee, Decorated.Base):
-                decoratee = _key.Decorator.Top[Params, Return](self._prefix, self._suffix)(decoratee)
+        # Create all the register links that lead up to the entrypoint decoration.
+        for i in range(len(decoratee.key)):
+            self.register.links.setdefault(decoratee.key[:i], set()).add(decoratee.key[i])
+        self.register.links.setdefault(decoratee.key, set())
 
-                # Create all the register links that lead up to the entrypoint decoration.
-                for i in range(len(decoratee.key)):
-                    self.register.links.setdefault(decoratee.key[:i], set()).add(decoratee.key[i])
-                self.register.links.setdefault(decoratee.key, set())
+        decoratee.register = self.register
+        assert isinstance(decoratee, Decorated)
 
-                decoratee.register = self.register
+        decorated = self.register.decoratees[decorated.key] = decoratee
 
-            decorated: Decorated.Top[Params, Return].Top = decoratee
-
-            self.register.decoratees[decorated.key] = decoratee
-
-            return decorated
-
-    class Async[** Params, Return](Base[Params, Return]):
-        __call__: typing.Callable[[Decoratee.Async[Params, Return]], Decorated.Async[Params, Return]]
-
-    class Multi[** Params, Return](Base[Params, Return]):
-        __call__: typing.Callable[[Decoratee.Multi[Params, Return]], Decorated.Multi[Params, Return]]
-
-    class Top[** Params, Return](Async[Params, Return], Multi[Params, Return]):
-
-        @typing.overload
-        def __call__(self, decoratee: Decoratee.Async[Params, Return], /) -> Decorated.Async[Params, Return]: ...
-
-        @typing.overload
-        def __call__(self, decoratee: Decoratee.Multi[Params, Return], /) -> Decorated.Multi[Params, Return]: ...
-
-        def __call__(self, decoratee: Decoratee.Top[Params, Return], /) -> Decorated.Top[Params, Return]:
-            return super().__call__(decoratee)
+        return decorated

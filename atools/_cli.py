@@ -41,7 +41,6 @@ Multiple-entrypoint example:
 
 """
 from __future__ import annotations
-import abc
 import annotated_types
 import argparse
 import ast
@@ -49,6 +48,7 @@ import asyncio
 import builtins
 import dataclasses
 import enum
+import functools
 import inspect
 import itertools
 import logging
@@ -57,9 +57,7 @@ import types
 import typing
 import sys
 
-from . import _decoratee
-from . import _key
-from . import _register
+from . import _base, _key, _register
 
 
 class _Exception(Exception):
@@ -196,8 +194,8 @@ class _AddArgument[T]:
         if add_argument.name_or_flags is ...:
             match parameter.kind, parameter.default == parameter.empty:
                 case (
-                (parameter.POSITIONAL_ONLY, _)
-                | ((parameter.VAR_POSITIONAL | parameter.POSITIONAL_OR_KEYWORD), True)
+                    (parameter.POSITIONAL_ONLY, _)
+                    | ((parameter.VAR_POSITIONAL | parameter.POSITIONAL_OR_KEYWORD), True)
                 ):
                     add_argument = dataclasses.replace(add_argument, name_or_flags=[parameter.name])
                 case (parameter.KEYWORD_ONLY, _) | (parameter.POSITIONAL_OR_KEYWORD, False):
@@ -335,253 +333,34 @@ class _Persist[** Params, Return]:
     # TODO: Make a sticky flag that memoizes a flag.
 
 
-Decoratee = _decoratee.Decorated
+class CLI[** Params, Return](argparse.ArgumentParser):
+    ...
 
 
-@typing.final
-class Decoration:
-
-    @dataclasses.dataclass(kw_only=True)
-    class Base[** Params, Return]:
-        ...
-
-    @dataclasses.dataclass(kw_only=True)
-    class Async[** Params, Return](Base[Params, Return]):
-        decoratee: Decoratee.Async[Params, Return]
-
-    @dataclasses.dataclass(kw_only=True)
-    class Multi[** Params, Return](Base[Params, Return]):
-        decoratee: Decoratee.Multi[Params, Return]
-
-    @dataclasses.dataclass(kw_only=True)
-    class Top[** Params, Return](Async[Params, Base], Multi[Params, Return]):
-        ...
+@typing.runtime_checkable
+class Decorated[** Params, Return](
+    _base.Decorated[Params, Return], _register.Decorated[Params, Return], typing.Protocol
+):
+    cli: CLI[Params, Return]
+    __call__: typing.Callable[[list[str]], Return]
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Decoration:
-    """CLI decoration attached to decorated entrypoint at `<entrypoint>.cli`.
-
-    A _Decoration instance is attached to an entrypoint decorated via _Decorator.__call__. The `run` function can then
-    be called with `<entrypoint>.cli.run`.
-    """
-
-    @dataclasses.dataclass(kw_only=True)
-    class Base[** Params, Return]:
-        decoratee: Decorated[Params, Return].Base
-        parser: argparse.ArgumentParser = dataclasses.field(default_factory=argparse.ArgumentParser)
-
-        @property
-        def parser(self) -> argparse.ArgumentParser:
-            signature = inspect.signature(self.decoratee)
-            parser = argparse.ArgumentParser(
-                description='\n'.join(filter(None, [
-                    self.decoratee.__doc__,
-                    f'return type: {pprint.pformat(signature.return_annotation, compact=True, width=75)}'
-                ])),
-                formatter_class=argparse.RawTextHelpFormatter
-            )
-
-            for parameter in signature.parameters.values():
-                if parameter.kind is inspect.Parameter.VAR_KEYWORD:
-                    # Var keywords will are parsed on a second pass.
-                    continue
-                add_argument_params = dict(
-                    filter(
-                        lambda item: not isinstance(item[1], typing.Hashable) or item[1] is not ...,
-                        dataclasses.asdict(_AddArgument().of_parameter(parameter)).items()
-                    )
-                )
-                parser.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
-
-            return parser
-
-        def __call__(self, args: typing.Sequence[str] = ...) -> typing.Awaitable[object] | object:
-            """Parses args, runs parser's registered entrypoint with parsed args, and return the result.
-
-            Note that the entrypoint that is run is determined by `self.name` and given `args`.
-
-            Ex.
-                Given the following registered entrypoints.
-
-                    @atools.CLI()  # Automatically registered as f'{__name__}.foo'
-                    def foo(arg: int) -> ...: ...
-
-                    @atools.CLI()  # Automatically registered as f'{__name__}.bar'
-                    def bar(arg: float) -> ...: ...
-
-                    @atools.CLI(f'{__name__}.qux')  # Manually registered as f'{__name__}.qux'
-                    async def baz(arg: str) -> ...: ...  # Async entrypoints are also fine.
-
-                Entrypoints may be called like so.
-
-                    atools.CLI(__name__).run(['foo', '42'])
-                    atools.CLI(f'{__name__}.foo').run(['42'])  # Equivalent to previous line.
-
-                    atools.CLI(__name__).run(['bar', '3.14'])
-                    atools.CLI(f'{__name__}.foo').run(['3.14'])  # Equivalent to previous line.
-
-                    atools.CLI(__name__).run(['qux', 'Hi!'])
-                    atools.CLI(f'{__name__}.qux').run(['Hi!'])  # Equivalent to previous line.
-
-            If the entrypoint a couroutinefunction, it will be run via `asyncio.run`.
-
-            Args (Positional or Keyword):
-                args: Arguments to be parsed and passed to parser's registered entrypoint.
-                    Default: sys.argv[1:]
-
-            Returns:
-                object: Result of executing registered entrypoint with given args.
-            """
-            args = sys.argv[1:] if args is ... else args
-
-            parsed_ns, remainder_args = self.parser.parse_known_args(args)
-            parsed_args = vars(parsed_ns)
-
-            # Note that this may be the registered entrypoint of a submodule, not the entrypoint that is decorated.
-            args, kwargs = [], {}
-            for parameter in inspect.signature(self.decoratee).parameters.values():
-                side_effects = []
-                if typing.get_origin(parameter.annotation) is typing.Annotated:
-                    for annotation in typing.get_args(parameter.annotation):
-                        match annotation:
-                            case _SideEffect(side_effect):
-                                side_effects.append(side_effect)
-
-                side_effect = [
-                    *itertools.accumulate(side_effects, func=lambda x, y: lambda z: x(y(z)), initial=lambda x: x)
-                ][-1]
-
-                values = []
-                match parameter.kind:
-                    case inspect.Parameter.POSITIONAL_ONLY:
-                        values = [parsed_args.pop(parameter.name)]
-                        args.append(side_effect(values[0]))
-                    case inspect.Parameter.POSITIONAL_OR_KEYWORD | inspect.Parameter.KEYWORD_ONLY:
-                        values = [parsed_args.pop(parameter.name)]
-                        kwargs[parameter.name] = values[0]
-                    case inspect.Parameter.VAR_POSITIONAL:
-                        values = [parsed_args.pop(parameter.name)][0][0]
-                        args += values
-                    case inspect.Parameter.VAR_KEYWORD:
-                        parser = argparse.ArgumentParser()
-                        for remainder_arg in remainder_args:
-                            if remainder_arg.startswith('--'):
-                                parser.add_argument(
-                                    remainder_arg, type=lambda arg: _Parser(t=parameter.annotation).parse_arg(arg)
-                                )
-                        remainder_ns = parser.parse_args(remainder_args)
-                        remainder_args = []
-                        remainder_kwargs = dict(vars(remainder_ns).items())
-
-                        values = remainder_kwargs.values()
-                        kwargs.update(remainder_kwargs)
-
-                [side_effect(value) for side_effect in side_effects for value in values]
-
-            assert not parsed_args, f'Unrecognized args: {parsed_args!r}.'
-            assert not remainder_args, f'Unrecognized args: {remainder_args!r}.'
-
-            return self.decoratee(*args, **kwargs)
-
-    @dataclasses.dataclass
-    class Async(Base):
-        async def __call__(self, args: typing.Sequence[str] = ...) -> object:
-            return await super().__call__(args=args)
-
-    @dataclasses.dataclass
-    class Multi(Base):
-        ...
-
-    @dataclasses.dataclass
-    class Top(Async, Multi, abc.ABC):
-
-        @typing.overload
-        async def __call__(self, args: typing.Sequence[str] = ...) -> object: ...
-
-        @typing.overload
-        def __call__(self, args: typing.Sequence[str] = ...) -> object: ...
-
-        def __call__(self, args: typing.Sequence[str] = ...) -> typing.Awaitable[object] | object: ...
+@typing.runtime_checkable
+class AsyncDecorated[** Params, Return](
+    Decorated[Params, Return], _base.AsyncDecorated[Params, Return], typing.Protocol
+):
+    ...
 
 
-CLI = Decoration
-
-
-decoratee = _decoratee.Decorated
-
-
-@typing.final
-class Decorated(abc.ABC):
-
-    @dataclasses.dataclass(kw_only=True)
-    class Base[** Params, Return]:
-        cli: CLI.Top[Params, Return]
-
-        def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> typing.Awaitable[Return] | Return:
-            args = sys.argv[1:] if args is ... else args
-
-            parsed_ns, remainder_args = self.cli.parser.parse_known_args(args)
-            parsed_args = vars(parsed_ns)
-
-            # Note that this may be the registered entrypoint of a submodule, not the entrypoint that is decorated.
-            args, kwargs = [], {}
-            for parameter in inspect.signature(self.cli.decoratee).parameters.values():
-                side_effects = []
-                if typing.get_origin(parameter.annotation) is typing.Annotated:
-                    for annotation in typing.get_args(parameter.annotation):
-                        match annotation:
-                            case _SideEffect(side_effect):
-                                side_effects.append(side_effect)
-
-                side_effect = [
-                    *itertools.accumulate(side_effects, func=lambda x, y: lambda z: x(y(z)), initial=lambda x: x)
-                ][-1]
-
-                values = []
-                match parameter.kind:
-                    case inspect.Parameter.POSITIONAL_ONLY:
-                        values = [parsed_args.pop(parameter.name)]
-                        args.append(side_effect(values[0]))
-                    case inspect.Parameter.POSITIONAL_OR_KEYWORD | inspect.Parameter.KEYWORD_ONLY:
-                        values = [parsed_args.pop(parameter.name)]
-                        kwargs[parameter.name] = values[0]
-                    case inspect.Parameter.VAR_POSITIONAL:
-                        values = [parsed_args.pop(parameter.name)][0][0]
-                        args += values
-                    case inspect.Parameter.VAR_KEYWORD:
-                        parser = argparse.ArgumentParser()
-                        for remainder_arg in remainder_args:
-                            if remainder_arg.startswith('--'):
-                                parser.add_argument(
-                                    remainder_arg, type=lambda arg: _Parser(t=parameter.annotation).parse_arg(arg)
-                                )
-                        remainder_ns = parser.parse_args(remainder_args)
-                        remainder_args = []
-                        remainder_kwargs = dict(vars(remainder_ns).items())
-
-                        values = remainder_kwargs.values()
-                        kwargs.update(remainder_kwargs)
-
-                [side_effect(value) for side_effect in side_effects for value in values]
-
-            assert not parsed_args, f'Unrecognized args: {parsed_args!r}.'
-            assert not remainder_args, f'Unrecognized args: {remainder_args!r}.'
-
-            return self.cli.decoratee(*args, **kwargs)
-
-    class Async[** Params, Return](Base[Params, Return]):
-        __call__: typing.Callable[Params, typing.Awaitable[Return]]
-
-    class Multi[** Params, Return](Base[Params, Return]):
-        __call__: typing.Callable[Params, Return]
-
-    type Top[** Params, Return] = Decorated.Async[Params, Return] | Decorated.Multi[Params, Return]
+@typing.runtime_checkable
+class MultiDecorated[** Params, Return](
+    Decorated[Params, Return], _base.MultiDecorated[Params, Return], typing.Protocol
+):
     ...
 
 
 @dataclasses.dataclass(frozen=True)
-class Decorator:
+class Decorator[** Params, Return]:
     """Decorate a function, adding `.cli` attribute.
 
     The `.cli.run` function parses command line arguments (e.g. `sys.argv[1:]`) and executes the decorated function with
@@ -621,74 +400,148 @@ class Decorator:
             generated for each submodule top-level function with name matching decorated entrypoint name.
     """
 
-    @dataclasses.dataclass(frozen=True, kw_only=True)
-    class Base[** Params, Return](_key.Decorator.Base):
+    _prefix: _key.Name = ...
+    _suffix: _key.Name = ...
 
-        @property
-        def parser(self) -> argparse.ArgumentParser:
-            return self.cli.parser
+    def __call__(self, decoratee: _base.Decoratee[Params, Return], /) -> Decorated[Params, Return]:
+        if isinstance(decoratee, Decorated):
+            return decoratee
 
-        @property
-        def cli(self) -> Decoration:
-            register = _register.Decorator.Top[Params, Return](self._prefix, self._suffix).register
-            key = _key.Decorator.Top[Params, Return](self._prefix, self._suffix).key
+        decoratee = _base.Decorator()(decoratee)
+        decoratee = _register.Decorator(self._prefix, self._suffix)(decoratee)
+        signature = inspect.signature(decoratee)
+        decoratee.cli = CLI(
+            description='\n'.join(filter(None, [
+                decoratee.__doc__,
+                f'return type: {pprint.pformat(signature.return_annotation, compact=True, width=75)}'
+            ])),
+            formatter_class=argparse.RawTextHelpFormatter
+        )
 
-            if (
-                ((decoratee := register.decoratees.get(key)) is None)
-                or not (isinstance(decorated, Decorated))
-            ):
-                @Decorator.Top[Params, Return]('.'.join(key))
-                def decorated(subcommand: typing.Literal[*sorted(register.links.get(key, set()))]) -> None:  # noqa
-                    self.parser.print_usage()
+        for parameter in signature.parameters.values():
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+                # Var keywords will are parsed on a second pass.
+                continue
+            add_argument_params = dict(
+                filter(
+                    lambda item: not isinstance(item[1], typing.Hashable) or item[1] is not ...,
+                    dataclasses.asdict(_AddArgument().of_parameter(parameter)).items()
+                )
+            )
+            decoratee.cli.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
 
-                # Using the local variables in function signature converts the entire annotation to a string without
-                #  evaluating it. Rather than let that happen, force evaluation of the annotation.
-                #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-                decorated.__annotations__['subcommand'] = eval(decorated.__annotations__['subcommand'], None, locals())
-                #decorated: Decorated = decoratee  # noqa
+        @functools.wraps(decoratee)
+        def decorated(args: list[str]) -> Return:
+            """Parses args, runs parser's registered entrypoint with parsed args, and return the result.
 
-            return decorated.cli
+            Note that the entrypoint that is run is determined by `self.name` and given `args`.
 
-        def run(self, args: typing.Sequence[str] = ...) -> object:
+            Ex.
+                Given the following registered entrypoints.
+
+                    @atools.CLI()  # Automatically registered as f'{__name__}.foo'
+                    def foo(arg: int) -> ...: ...
+
+                    @atools.CLI()  # Automatically registered as f'{__name__}.bar'
+                    def bar(arg: float) -> ...: ...
+
+                    @atools.CLI(f'{__name__}.qux')  # Manually registered as f'{__name__}.qux'
+                    async def baz(arg: str) -> ...: ...  # Async entrypoints are also fine.
+
+                Entrypoints may be called like so.
+
+                    atools.CLI(__name__).run(['foo', '42'])
+                    atools.CLI(f'{__name__}.foo').run(['42'])  # Equivalent to previous line.
+
+                    atools.CLI(__name__).run(['bar', '3.14'])
+                    atools.CLI(f'{__name__}.foo').run(['3.14'])  # Equivalent to previous line.
+
+                    atools.CLI(__name__).run(['qux', 'Hi!'])
+                    atools.CLI(f'{__name__}.qux').run(['Hi!'])  # Equivalent to previous line.
+
+            If the entrypoint a couroutinefunction, it will be run via `asyncio.run`.
+
+            Args (Positional or Keyword):
+                args: Arguments to be parsed and passed to parser's registered entrypoint.
+                    Default: sys.argv[1:]
+
+            Returns:
+                object: Result of executing registered entrypoint with given args.
+            """
+            assert isinstance(decoratee, Decorated)
+
             args = sys.argv[1:] if args is ... else args
-            register = _register.Decorator[Params, Return].Top(self._prefix, self._suffix).get_register()
-            key = _key.Decorator.Base(self._prefix, self._suffix).key
 
-            while args and (tuple([*key, args[0]]) in register.links):
-                key = tuple([*key, args.pop(0)])
+            parsed_ns, remainder_args = decoratee.cli.parse_known_args(args)
+            parsed_args = vars(parsed_ns)
 
-            return Decorator.Top('.'.join(key)).cli.run(args)
+            # Note that this may be the registered entrypoint of a submodule, not the entrypoint that is decorated.
+            args, kwargs = [], {}
+            for _parameter in inspect.signature(decoratee.decoratee).parameters.values():
+                side_effects = []
+                if typing.get_origin(_parameter.annotation) is typing.Annotated:
+                    for annotation in typing.get_args(_parameter.annotation):
+                        match annotation:
+                            case _SideEffect(side_effect):
+                                side_effects.append(side_effect)
 
-    @dataclasses.dataclass(frozen=True, kw_only=True)
-    class Async[** Params, Return](Base[Params, Return]):
-        ...
+                side_effect = [
+                    *itertools.accumulate(side_effects, func=lambda x, y: lambda z: x(y(z)), initial=lambda x: x)
+                ][-1]
 
-    @dataclasses.dataclass(frozen=True, kw_only=True)
-    class Multi[** Params, Return](Base[Params, Return]):
-        ...
+                values = []
+                match _parameter.kind:
+                    case inspect.Parameter.POSITIONAL_ONLY:
+                        values = [parsed_args.pop(_parameter.name)]
+                        args.append(side_effect(values[0]))
+                    case inspect.Parameter.POSITIONAL_OR_KEYWORD | inspect.Parameter.KEYWORD_ONLY:
+                        values = [parsed_args.pop(_parameter.name)]
+                        kwargs[_parameter.name] = values[0]
+                    case inspect.Parameter.VAR_POSITIONAL:
+                        values = [parsed_args.pop(_parameter.name)][0][0]
+                        args += values
+                    case inspect.Parameter.VAR_KEYWORD:
+                        parser = argparse.ArgumentParser()
+                        for remainder_arg in remainder_args:
+                            if remainder_arg.startswith('--'):
+                                parser.add_argument(
+                                    remainder_arg, type=lambda arg: _Parser(t=_parameter.annotation).parse_arg(arg)
+                                )
+                        remainder_ns = parser.parse_args(remainder_args)
+                        remainder_args = []
+                        remainder_kwargs = dict(vars(remainder_ns).items())
 
-    @dataclasses.dataclass(frozen=True, kw_only=True)
-    class Top[** Params, Return]():
+                        values = remainder_kwargs.values()
+                        kwargs.update(remainder_kwargs)
 
-        @typing.overload
-        def __call__(
-            self, decoratee: Decoratee.Async[Params, Return], /
-        ) -> Decorated.Async[[typing.Sequence[str]], Return]: ...
+                [side_effect(value) for side_effect in side_effects for value in values]
 
-        @typing.overload
-        def __call__(
-            self, decoratee: Decoratee.Multi[Params, Return], /
-        ) -> Decorated.Multi[typing.Sequence[str], Return]: ...
+            assert not parsed_args, f'Unrecognized args: {parsed_args!r}.'
+            assert not remainder_args, f'Unrecognized args: {remainder_args!r}.'
 
-        def __call__(
-            self, decoratee: Decoratee.Top[Params, Return], /
-        ) -> Decorated.Top[typing.Sequence[str], Return]:
-            decoratee = _register.Decorator.Top[Params, Return](self._prefix, self._suffix)(decoratee)
+            return_ = decoratee.decoratee(*args, **kwargs)
+            if inspect.iscoroutinefunction(decoratee.decoratee):
+                return_ = asyncio.run(return_)
+            return return_
 
-            if inspect.iscoroutinefunction(decoratee):
-                decorated = Decorated.Async[Params, Return](cli=CLI.Multi[Params, Return](decoratee))
-            else:
-                decorated = Decorated.Multi[Params, Return](cli=CLI.Multi[Params, Return](decoratee))
+        return decorated
 
-            return decorated
+    def run(self, args: typing.Sequence[str] = ...) -> object:
+        args = sys.argv[1:] if args is ... else args
+        register = _register.Decorator[Params, Return].Top(self._prefix, self._suffix).get_register()
+        key = _key.Decorator(self._prefix, self._suffix).key
 
+        while args and (tuple([*key, args[0]]) in register.links):
+            key = tuple([*key, args.pop(0)])
+
+        if not isinstance(decorated := register.get(key), Decorated):
+            @Decorator('.'.join(key))
+            def decorated(subcommand: typing.Literal[*sorted(register.links.get(key, set()))]) -> None:  # noqa
+                decorated.cli.print_usage()
+
+            # Using the local variables in function signature converts the entire annotation to a string without
+            #  evaluating it. Rather than let that happen, force evaluation of the annotation.
+            #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
+            decorated.__annotations__['subcommand'] = eval(decorated.__annotations__['subcommand'], None, locals())
+
+        return decorated(args)
