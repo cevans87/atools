@@ -237,7 +237,7 @@ def test_execute_hidden_subcommand_works() -> None:
     def _foo(foo: str) -> dict[str, str]:
         return locals()
 
-    assert '_foo' not in atools.CLI(prefix).parser.format_help()
+    assert '_foo' not in atools.CLI(prefix).cli.format_help()
     assert atools.CLI(prefix).run(shlex.split('_foo hidden_subcommand_works')) == {'foo': 'hidden_subcommand_works'}
 
 
@@ -254,7 +254,7 @@ def test_dash_help_prints_parameter_annotation() -> None:
     @atools.CLI()
     def entrypoint(foo: typing.Annotated[int, 'This is my comment.']) -> ...: ...
 
-    assert 'This is my comment.' in entrypoint.cli.parser.format_help()
+    assert 'This is my comment.' in entrypoint.cli.format_help()
 
 
 def test_positional_only_without_default_works() -> None:
@@ -275,7 +275,7 @@ def test_dash_help_prints_entrypoint_doc() -> None:
     def entrypoint(foo: int) -> ...:
         """What's up, Doc?"""
 
-    assert """What's up, Doc?""" in entrypoint.cli.parser.format_help()
+    assert """What's up, Doc?""" in entrypoint.cli.format_help()
 
 
 def test_annotation_log_level_of_logger_sets_choices() -> None:
@@ -285,7 +285,7 @@ def test_annotation_log_level_of_logger_sets_choices() -> None:
     def entrypoint(foo: atools.CLI.Annotated.log_level(logger) = 'DEBUG') -> ...: ...
 
     for choice in typing.get_args(atools.CLI.Annotated.LogLevelStr):
-        assert choice in entrypoint.cli.parser.format_help()
+        assert choice in entrypoint.cli.format_help()
 
 
 def test_annotation_log_level_of_logger_sets_log_level() -> None:
@@ -372,7 +372,7 @@ def test_enum_help_text_shows_choices() -> None:
     @atools.CLI()
     def entrypoint(foo: FooEnum) -> dict[str, FooEnum]: ...
 
-    assert '(\'a\', \'b\', \'c\')' in entrypoint.cli.parser.format_help()
+    assert '(\'a\', \'b\', \'c\')' in entrypoint.cli.format_help()
 
 
 def test_literal_help_text_shows_choices() -> None:
@@ -380,7 +380,7 @@ def test_literal_help_text_shows_choices() -> None:
     @atools.CLI()
     def entrypoint(foo: typing.Literal[1, 2, 3]) -> dict[str, typing.Literal[1, 2, 3]]: ...
 
-    assert '(\'1\', \'2\', \'3\')' in entrypoint.cli.parser.format_help()
+    assert '(\'1\', \'2\', \'3\')' in entrypoint.cli.format_help()
 
 
 def test_help_shows_type_annotation() -> None:
@@ -388,7 +388,7 @@ def test_help_shows_type_annotation() -> None:
     @atools.CLI()
     def entrypoint(foo: dict[str, int]) -> ...: ...
 
-    assert str(dict[str, int]) in entrypoint.cli.parser.format_help()
+    assert str(dict[str, int]) in entrypoint.cli.format_help()
 
 
 def test_enum_enforces_choices() -> None:
@@ -420,27 +420,26 @@ def test_cli_names_enforce_subcommand_structure() -> None:
         @atools.CLI(prefix, suffix)
         def entrypoint() -> dict[str, object]: ...
 
-    assert 'baz' in atools.CLI(prefix, 'foo').parser.format_help()
-    assert 'qux' in atools.CLI(prefix, 'foo').parser.format_help()
-    assert 'quux' in atools.CLI(prefix, 'bar').parser.format_help()
-    assert 'corge' in atools.CLI(prefix, 'bar').parser.format_help()
+    assert 'baz' in atools.CLI(prefix, 'foo').cli.format_help()
+    assert 'qux' in atools.CLI(prefix, 'foo').cli.format_help()
+    assert 'quux' in atools.CLI(prefix, 'bar').cli.format_help()
+    assert 'corge' in atools.CLI(prefix, 'bar').cli.format_help()
 
 
 def test_unresolved_annotation_raises_assertion_error() -> None:
     choices = ['a', 'b', 'c']
 
-    @atools.CLI()
-    def entrypoint(foo: 'typing.Annotated[str, atools.CLI.AddArgument[str](choices=choices)]') -> ...: ...
-
     with pytest.raises(AssertionError):
-        entrypoint(shlex.split('a'))
+        @atools.CLI()
+        def entrypoint(foo: 'typing.Annotated[str, atools.CLI.AddArgument[str](choices=choices)]') -> ...: ...
 
+    def entrypoint(foo: 'typing.Annotated[str, atools.CLI.AddArgument[str](choices=choices)]') -> ...: ...
     entrypoint.__annotations__['foo'] = eval(entrypoint.__annotations__['foo'], globals(), locals())
-    entrypoint(shlex.split('a'))
+    entrypoint = atools.CLI()(entrypoint)
 
 
 def test_missing_entrypoint_generates_blank_entrypoint() -> None:
-    assert '-h' in atools.CLI(test_missing_entrypoint_generates_blank_entrypoint.__name__).parser.format_help()
+    assert '-h' in atools.CLI(test_missing_entrypoint_generates_blank_entrypoint.__name__).cli.format_help()
 
 
 def test_var_positional_args_are_parsed() -> None:

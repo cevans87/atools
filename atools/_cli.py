@@ -403,12 +403,15 @@ class Decorator[** Params, Return]:
     _prefix: _key.Name = ...
     _suffix: _key.Name = ...
 
+    AddArgument: typing.ClassVar = _AddArgument
+    Annotated: typing.ClassVar = _Annotated
+    Exception: typing.ClassVar = _Exception
+
     def __call__(self, decoratee: _base.Decoratee[Params, Return], /) -> Decorated[Params, Return]:
         if isinstance(decoratee, Decorated):
             return decoratee
 
         decoratee = _base.Decorator()(decoratee)
-        decoratee = _register.Decorator(self._prefix, self._suffix)(decoratee)
         signature = inspect.signature(decoratee)
         decoratee.cli = CLI(
             description='\n'.join(filter(None, [
@@ -422,16 +425,14 @@ class Decorator[** Params, Return]:
             if parameter.kind is inspect.Parameter.VAR_KEYWORD:
                 # Var keywords will are parsed on a second pass.
                 continue
-            add_argument_params = dict(
-                filter(
-                    lambda item: not isinstance(item[1], typing.Hashable) or item[1] is not ...,
-                    dataclasses.asdict(_AddArgument().of_parameter(parameter)).items()
-                )
-            )
+            add_argument_params = dict(filter(
+                lambda item: not isinstance(item[1], typing.Hashable) or item[1] is not ...,
+                dataclasses.asdict(_AddArgument().of_parameter(parameter)).items()
+            ))
             decoratee.cli.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
 
         @functools.wraps(decoratee)
-        def decorated(args: list[str]) -> Return:
+        def decoratee(args: list[str]) -> Return:
             """Parses args, runs parser's registered entrypoint with parsed args, and return the result.
 
             Note that the entrypoint that is run is determined by `self.name` and given `args`.
@@ -477,7 +478,7 @@ class Decorator[** Params, Return]:
 
             # Note that this may be the registered entrypoint of a submodule, not the entrypoint that is decorated.
             args, kwargs = [], {}
-            for _parameter in inspect.signature(decoratee.decoratee).parameters.values():
+            for _parameter in inspect.signature(decoratee.__wrapped__).parameters.values():
                 side_effects = []
                 if typing.get_origin(_parameter.annotation) is typing.Annotated:
                     for annotation in typing.get_args(_parameter.annotation):
@@ -519,23 +520,27 @@ class Decorator[** Params, Return]:
             assert not parsed_args, f'Unrecognized args: {parsed_args!r}.'
             assert not remainder_args, f'Unrecognized args: {remainder_args!r}.'
 
-            return_ = decoratee.decoratee(*args, **kwargs)
-            if inspect.iscoroutinefunction(decoratee.decoratee):
+            return_ = decoratee.__wrapped__(*args, **kwargs)
+            if inspect.iscoroutinefunction(decoratee.__wrapped__):
                 return_ = asyncio.run(return_)
             return return_
 
+        decorated = _register.Decorator(self._prefix, self._suffix)(decoratee)
+
+        assert isinstance(decorated, Decorated)
+
         return decorated
 
-    def run(self, args: typing.Sequence[str] = ...) -> object:
-        args = sys.argv[1:] if args is ... else args
-        register = _register.Decorator[Params, Return].Top(self._prefix, self._suffix).get_register()
+    @property
+    def cli(self) -> CLI[Params, Return]:
+        return self.decorated.cli
+
+    @property
+    def decorated(self) -> Decorated:
+        register = _register.Decorator[Params, Return](self._prefix, self._suffix).register
         key = _key.Decorator(self._prefix, self._suffix).key
 
-        while args and (tuple([*key, args[0]]) in register.links):
-            key = tuple([*key, args.pop(0)])
-
-        if not isinstance(decorated := register.get(key), Decorated):
-            @Decorator('.'.join(key))
+        if not isinstance((decorated := register.decoratees.get(key)), Decorated):
             def decorated(subcommand: typing.Literal[*sorted(register.links.get(key, set()))]) -> None:  # noqa
                 decorated.cli.print_usage()
 
@@ -544,4 +549,16 @@ class Decorator[** Params, Return]:
             #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
             decorated.__annotations__['subcommand'] = eval(decorated.__annotations__['subcommand'], None, locals())
 
-        return decorated(args)
+            decorated = Decorator('.'.join(key))(decorated)
+
+        return decorated
+
+    def run(self, args: typing.Sequence[str] = ...) -> object:
+        args = sys.argv[1:] if args is ... else args
+        register = _register.Decorator[Params, Return](self._prefix, self._suffix).register
+        key = _key.Decorator(self._prefix, self._suffix).key
+
+        while args and (tuple([*key, args[0]]) in register.links):
+            key = tuple([*key, args.pop(0)])
+
+        return Decorator('.'.join(key)).decorated(args)

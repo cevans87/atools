@@ -14,7 +14,7 @@ def simple_arg(arg: str) -> None:
     """Demo for CLI with an arg.
 
     Ex:
-        python3 -m demo cli positional_only_without_defaults 42 Hi!
+        python3 -m demo cli simple_arg Hi!
     """
     print(locals())
 
@@ -96,11 +96,11 @@ def positional_or_keyword_with_defaults(
     """Demo for CLI entrypoint with positional-or-keyword args with defaults.
 
     Ex:
-        python3 -m demo cli keyword_only_without_defaults
-        python3 -m demo cli keyword_only_without_defaults --foo 3.14
-        python3 -m demo cli keyword_only_without_defaults --bar True
-        python3 -m demo cli keyword_only_without_defaults --foo 3.14 --bar True
-        python3 -m demo cli keyword_only_without_defaults --foo 3.14 --bar True
+        python3 -m demo cli positional_or_keyword_with_defaults
+        python3 -m demo cli positional_or_keyword_with_defaults --foo 3.14
+        python3 -m demo cli positional_or_keyword_with_defaults --bar True
+        python3 -m demo cli positional_or_keyword_with_defaults --foo 3.14 --bar True
+        python3 -m demo cli positional_or_keyword_with_defaults --foo 3.14 --bar True
     """
     print(locals())
 
@@ -114,11 +114,11 @@ def keyword_only_with_defaults(
     """Demo for CLI entrypoint with keyword-only args with defaults.
 
     Ex:
-        python3 -m demo cli keyword_only_without_defaults
-        python3 -m demo cli keyword_only_without_defaults --foo 3.14
-        python3 -m demo cli keyword_only_without_defaults --bar True
-        python3 -m demo cli keyword_only_without_defaults --foo 3.14 --bar True
-        python3 -m demo cli keyword_only_without_defaults --foo 3.14 --bar True
+        python3 -m demo cli keyword_only_with_defaults
+        python3 -m demo cli keyword_only_with_defaults --foo 3.14
+        python3 -m demo cli keyword_only_with_defaults --bar True
+        python3 -m demo cli keyword_only_with_defaults --foo 3.14 --bar True
+        python3 -m demo cli keyword_only_with_defaults --foo 3.14 --bar True
     """
     print(locals())
 

@@ -56,23 +56,23 @@ class MultiDecoration[** Params, Return](Decoration[Params, Return], abc.ABC):
 
 @typing.runtime_checkable
 class Decorated[** Params, Return](typing.Protocol):
-    decoratee: Decoratee[Params, Return]
-    decorations: tuple[Decoration[Params, Return], ...]
+    base: tuple[Decoration[Params, Return], ...]
     __call__: typing.Callable[Params, typing.Awaitable[Return] | Return]
+    __wrapped__: Decoratee[Params, Return]
 
 
 @typing.runtime_checkable
 class AsyncDecorated[** Params, Return](Decorated[Params, Return], typing.Protocol):
-    decoratee: AsyncDecoratee[Params, Return]
-    decorations: tuple[AsyncDecoration[Params, Return], ...]
+    base: tuple[AsyncDecoration[Params, Return], ...]
     __call__: typing.Callable[Params, typing.Awaitable[Return]]
+    __wrapped__: AsyncDecoratee[Params, Return]
 
 
 @typing.runtime_checkable
 class MultiDecorated[** Params, Return](Decorated[Params, Return], typing.Protocol):
-    decoratee: MultiDecoratee[Params, Return]
-    decorations: tuple[MultiDecoration[Params, Return], ...]
+    base: tuple[MultiDecoration[Params, Return], ...]
     __call__: typing.Callable[Params, typing.Awaitable[Return]]
+    __wrapped__: MultiDecoratee[Params, Return]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -86,47 +86,42 @@ class Decorator[** Params, Return]:
 
     def __call__(self, decoratee: Decoratee, /) -> Decorated:
         assert not isinstance(decoratee, Decoration)
-
-        decoratee.decoratee = decoratee
-        decoratee.decorations = tuple()
-        assert isinstance(decoratee, Decorated)
+        decoratee.base = tuple()
 
         if inspect.iscoroutinefunction(decoratee):
             @functools.wraps(decoratee)
-            async def decoratee(*args: Params.args, **kwargs: Params.kwargs) -> Return:
+            async def decorated(*args: Params.args, **kwargs: Params.kwargs) -> Return:
                 async with contextlib.AsyncExitStack() as stack:
-                    decorations = [
+                    base = [
                         await stack.enter_async_context(
                             dataclasses.replace(decoration, state=State(args=args, kwargs=kwargs)))
-                        for decoration in reversed(decoratee.decorations)
+                        for decoration in reversed(decoratee.base)
                     ]
 
-                    return_ = await decoratee.decoratee(*args, **kwargs)
+                    return_ = await decoratee(*args, **kwargs)
 
-                    for decoration in reversed(decorations):
+                    for decoration in reversed(base):
                         await decoration(State(args=args, kwargs=kwargs, return_=return_))
 
                 return return_
 
-            assert isinstance(decoratee, AsyncDecorated)
+            assert isinstance(decorated, AsyncDecorated)
         else:
             @functools.wraps(decoratee)
-            def decoratee(*args: Params.args, **kwargs: Params.kwargs) -> Return:
+            def decorated(*args: Params.args, **kwargs: Params.kwargs) -> Return:
                 with contextlib.ExitStack() as stack:
-                    decorations = [
+                    base = [
                         stack.enter_context(dataclasses.replace(decoration, state=State(args=args, kwargs=kwargs)))
-                        for decoration in reversed(decoratee.decorations)
+                        for decoration in reversed(decoratee.base)
                     ]
 
-                    return_ = decoratee.decoratee(*args, **kwargs)
+                    return_ = decoratee(*args, **kwargs)
 
-                    for decoration in reversed(decorations):
+                    for decoration in reversed(base):
                         decoration(State(args=args, kwargs=kwargs, return_=return_))
 
                 return return_
 
-            assert isinstance(decoratee, MultiDecorated)
-
-        decorated = decoratee
+            assert isinstance(decorated, MultiDecorated)
 
         return decorated

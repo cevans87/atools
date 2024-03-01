@@ -32,7 +32,9 @@ class MultiDecorated[** Params, Return](
 
 
 @dataclasses.dataclass(frozen=True)
-class Decorator[**Params, Return](_key.Decorator[Params, Return]):
+class Decorator[**Params, Return]:
+    _prefix: _key.Name = ...
+    _suffix: _key.Name = ...
     register: Register = Register()
 
     @typing.overload
@@ -50,7 +52,7 @@ class Decorator[**Params, Return](_key.Decorator[Params, Return]):
     ) -> Decorated[Params, Return]:
         assert not isinstance(decoratee, Decorated)
         if not isinstance(decoratee, _key.Decorated):
-            decoratee = _key.Decorator()(decoratee)
+            decoratee = _key.Decorator(self._prefix, self._suffix)(decoratee)
 
         # Create all the register links that lead up to the entrypoint decoration.
         for i in range(len(decoratee.key)):
