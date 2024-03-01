@@ -1,9 +1,5 @@
-from . import _base
-from . import _cli
-from . import _key
-from . import _register
-
-Base = _base.Decorator
-CLI = _cli.Decorator
-Key = _key.Decorator
-Register = _register.Decorator
+from ._contexts import Decorator as Contexts
+from ._cli import Decorator as CLI
+from ._key import Decorator as Key
+from ._register import Decorator as Register
+from ._throttle import Decorator as Throttle

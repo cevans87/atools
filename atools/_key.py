@@ -3,7 +3,7 @@ import dataclasses
 import re
 import typing
 
-from . import _base
+from . import _contexts
 
 
 type Name = typing.Annotated[str, annotated_types.Predicate(str.isidentifier)]  # noqa
@@ -14,20 +14,20 @@ class Key(tuple[str, ...]):
 
 
 @typing.runtime_checkable
-class Decorated[** Params, Return](_base.Decoratee[Params, Return], typing.Protocol):
+class Decorated[** Params, Return](_contexts.Decoratee[Params, Return], typing.Protocol):
     key: Key
 
 
 @typing.runtime_checkable
 class AsyncDecorated[** Params, Return](
-    _base.AsyncDecoratee[Params, Return], Decorated[Params, Return], typing.Protocol
+    _contexts.AsyncDecoratee[Params, Return], Decorated[Params, Return], typing.Protocol
 ):
     ...
 
 
 @typing.runtime_checkable
 class MultiDecorated[** Params, Return](
-    _base.MultiDecoratee[Params, Return], Decorated[Params, Return], typing.Protocol
+    _contexts.MultiDecoratee[Params, Return], Decorated[Params, Return], typing.Protocol
 ):
     ...
 
@@ -38,15 +38,15 @@ class Decorator[** Params, Return]:
     _suffix: Name = ...
 
     @typing.overload
-    def __call__(self, decoratee: _base.AsyncDecoratee[Params, Return], /) -> AsyncDecorated[Params, Return]: ...
+    def __call__(self, decoratee: _contexts.AsyncDecoratee[Params, Return], /) -> AsyncDecorated[Params, Return]: ...
 
     @typing.overload
-    def __call__(self, decoratee: _base.MultiDecoratee[Params, Return], /) -> MultiDecorated[Params, Return]: ...
+    def __call__(self, decoratee: _contexts.MultiDecoratee[Params, Return], /) -> MultiDecorated[Params, Return]: ...
 
-    def __call__(self, decoratee: _base.Decoratee[Params, Return], /) -> Decorated[Params, Return]:
+    def __call__(self, decoratee: _contexts.Decoratee[Params, Return], /) -> Decorated[Params, Return]:
         assert not isinstance(decoratee, Decorated)
-        if not isinstance(decoratee, _base.Decorated):
-            decoratee = _base.Decorator()(decoratee)
+        if not isinstance(decoratee, _contexts.Decorated):
+            decoratee = _contexts.Decorator()(decoratee)
 
         prefix = self._prefix if self._prefix is not ... else decoratee.__module__
         suffix = self._suffix if self._prefix is not ... or self._suffix is not ... else re.sub(

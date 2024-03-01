@@ -57,7 +57,7 @@ import types
 import typing
 import sys
 
-from . import _base, _key, _register
+from . import _contexts, _key, _register
 
 
 class _Exception(Exception):
@@ -339,7 +339,7 @@ class CLI[** Params, Return](argparse.ArgumentParser):
 
 @typing.runtime_checkable
 class Decorated[** Params, Return](
-    _base.Decorated[Params, Return], _register.Decorated[Params, Return], typing.Protocol
+    _contexts.Decorated[Params, Return], _register.Decorated[Params, Return], typing.Protocol
 ):
     cli: CLI[Params, Return]
     __call__: typing.Callable[[list[str]], Return]
@@ -347,14 +347,14 @@ class Decorated[** Params, Return](
 
 @typing.runtime_checkable
 class AsyncDecorated[** Params, Return](
-    Decorated[Params, Return], _base.AsyncDecorated[Params, Return], typing.Protocol
+    Decorated[Params, Return], _contexts.AsyncDecorated[Params, Return], typing.Protocol
 ):
     ...
 
 
 @typing.runtime_checkable
 class MultiDecorated[** Params, Return](
-    Decorated[Params, Return], _base.MultiDecorated[Params, Return], typing.Protocol
+    Decorated[Params, Return], _contexts.MultiDecorated[Params, Return], typing.Protocol
 ):
     ...
 
@@ -407,11 +407,11 @@ class Decorator[** Params, Return]:
     Annotated: typing.ClassVar = _Annotated
     Exception: typing.ClassVar = _Exception
 
-    def __call__(self, decoratee: _base.Decoratee[Params, Return], /) -> Decorated[Params, Return]:
+    def __call__(self, decoratee: _contexts.Decoratee[Params, Return], /) -> Decorated[Params, Return]:
         if isinstance(decoratee, Decorated):
             return decoratee
 
-        decoratee = _base.Decorator()(decoratee)
+        decoratee = _contexts.Decorator()(decoratee)
         signature = inspect.signature(decoratee)
         decoratee.cli = CLI(
             description='\n'.join(filter(None, [

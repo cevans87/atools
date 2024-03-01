@@ -1,14 +1,13 @@
-from __future__ import annotations
 import abc
 import dataclasses
 import typing
 
-from . import _base, _key
+from . import _contexts, _key
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Register(abc.ABC):
-    decoratees: dict[_key.Key, _base.Decoratee] = dataclasses.field(default_factory=dict)
+    decoratees: dict[_key.Key, _contexts.Decoratee] = dataclasses.field(default_factory=dict)
     links: dict[_key.Key, set[_key.Name]] = dataclasses.field(default_factory=dict)
 
 
@@ -38,18 +37,12 @@ class Decorator[**Params, Return]:
     register: Register = Register()
 
     @typing.overload
-    def __call__(
-        self, decoratee: _base.AsyncDecoratee[Params, Return], /
-    ) -> AsyncDecorated[Params, Return]: ...
+    def __call__(self, decoratee: _contexts.AsyncDecoratee[Params, Return], /) -> AsyncDecorated[Params, Return]: ...
 
     @typing.overload
-    def __call__(
-        self, decoratee: _base.MultiDecoratee[Params, Return], /
-    ) -> MultiDecorated[Params, Return]: ...
+    def __call__(self, decoratee: _contexts.MultiDecoratee[Params, Return], /) -> MultiDecorated[Params, Return]: ...
 
-    def __call__(
-        self, decoratee: _base.Decoratee[Params, Return], /
-    ) -> Decorated[Params, Return]:
+    def __call__(self, decoratee: _contexts.Decoratee[Params, Return], /) -> Decorated[Params, Return]:
         assert not isinstance(decoratee, Decorated)
         if not isinstance(decoratee, _key.Decorated):
             decoratee = _key.Decorator(self._prefix, self._suffix)(decoratee)
@@ -60,7 +53,6 @@ class Decorator[**Params, Return]:
         self.register.links.setdefault(decoratee.key, set())
 
         decoratee.register = self.register
-        assert isinstance(decoratee, Decorated)
 
         decorated = self.register.decoratees[decorated.key] = decoratee
 
