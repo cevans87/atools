@@ -13,7 +13,7 @@ import logging
 
 import atools
 
-from . import advanced, cli, first_example, memoize, rate
+from . import advanced, cli, first_example, memoize, throttle
 
 logging.basicConfig(level=logging.CRITICAL, format='%(levelname)s: %(message)s')
 

@@ -10,7 +10,9 @@ type Name = typing.Annotated[str, annotated_types.Predicate(str.isidentifier)]  
 
 
 class Key(tuple[str, ...]):
-    ...
+
+    def __str__(self) -> str:
+        return '.'.join(self)
 
 
 @typing.runtime_checkable

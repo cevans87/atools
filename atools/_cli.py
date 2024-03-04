@@ -549,7 +549,7 @@ class Decorator[** Params, Return]:
             #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
             decorated.__annotations__['subcommand'] = eval(decorated.__annotations__['subcommand'], None, locals())
 
-            decorated = Decorator('.'.join(key))(decorated)
+            decorated = Decorator(str(key))(decorated)
 
         return decorated
 
@@ -561,4 +561,4 @@ class Decorator[** Params, Return]:
         while args and (tuple([*key, args[0]]) in register.links):
             key = tuple([*key, args.pop(0)])
 
-        return Decorator('.'.join(key)).decorated(args)
+        return Decorator(str(key)).decorated(args)
