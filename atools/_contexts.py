@@ -1,10 +1,15 @@
 import abc
+import builtins
 import functools
 import contextlib
 import dataclasses
 import inspect
 import types
 import typing
+
+
+class Exception(builtins.Exception):  # noqa
+    ...
 
 
 class Decoratee[** Params, Return](typing.Protocol):
@@ -26,10 +31,19 @@ class Context[** Params, Return](abc.ABC):
     return_: Return = ...
     signature: inspect.Signature
 
+    @property
+    def key(self):
+        assert self.args is not ... and self.kwargs is not ...
+
+        bound_arguments = self.signature.bind(*self.args, **self.kwargs)
+        bound_arguments.apply_defaults()
+
+        return bound_arguments.args, tuple(sorted(bound_arguments.kwargs.items()))
+
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncContext[** Params, Return](Context[Params, Return], abc.ABC):
-    __call__: typing.Callable[[Return], typing.Awaitable[None]] = ...
+    __call__: typing.ClassVar[typing.Callable[[], typing.Awaitable[None]]]
 
     async def __aenter__(self):
         return self
@@ -40,7 +54,7 @@ class AsyncContext[** Params, Return](Context[Params, Return], abc.ABC):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiContext[** Params, Return](Context[Params, Return], abc.ABC):
-    __call__: typing.Callable[[Return], None] = ...
+    __call__: typing.ClassVar[typing.Callable[[], None]]
 
     def __enter__(self):
         return self
@@ -49,25 +63,48 @@ class MultiContext[** Params, Return](Context[Params, Return], abc.ABC):
         return None
 
 
-@typing.runtime_checkable
-class Decorated[** Params, Return](typing.Protocol):
-    contexts: tuple[Context[Params, Return], ...]
-    __call__: typing.Callable[Params, typing.Awaitable[Return] | Return]
-    __wrapped__: Decoratee[Params, Return]
+@dataclasses.dataclass(kw_only=True)
+class Decorated[** Params, Return](abc.ABC):
+    contexts: tuple[Context[Params, Return], ...] = ()
+    decoratee: Decoratee[Params, Return]
+
+    __call__: typing.ClassVar[typing.Callable[Params, typing.Awaitable[Return] | Return]]
 
 
-@typing.runtime_checkable
-class AsyncDecorated[** Params, Return](Decorated[Params, Return], typing.Protocol):
-    contexts: tuple[AsyncContext[Params, Return], ...]
-    __call__: typing.Callable[Params, typing.Awaitable[Return]]
-    __wrapped__: AsyncDecoratee[Params, Return]
+@dataclasses.dataclass(kw_only=True)
+class AsyncDecorated[** Params, Return](Decorated[Params, Return]):
+    contexts: tuple[AsyncContext[Params, Return], ...] = ()
+    decoratee: AsyncDecoratee[Params, Return]
+
+    async def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return:
+        async with contextlib.AsyncExitStack() as stack:
+            for context in self.contexts:
+                await stack.enter_async_context(dataclasses.replace(context, args=args, kwargs=kwargs))
+
+            return_ = await self.decoratee(*args, **kwargs)
+
+            for context in reversed(self.contexts):
+                await dataclasses.replace(context, args=args, kwargs=kwargs, return_=return_)()
+
+        return return_
 
 
-@typing.runtime_checkable
-class MultiDecorated[** Params, Return](Decorated[Params, Return], typing.Protocol):
-    contexts: tuple[MultiContext[Params, Return], ...]
-    __call__: typing.Callable[Params, typing.Awaitable[Return]]
-    __wrapped__: MultiDecoratee[Params, Return]
+@dataclasses.dataclass(kw_only=True)
+class MultiDecorated[** Params, Return](Decorated[Params, Return]):
+    contexts: tuple[MultiContext[Params, Return], ...] = ()
+    decoratee: MultiDecoratee[Params, Return]
+
+    def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return:
+        with contextlib.ExitStack() as stack:
+            for context in self.contexts:
+                stack.enter_context(dataclasses.replace(context, args=args, kwargs=kwargs))
+
+            return_ = self.decoratee(*args, **kwargs)
+
+            for context in reversed(self.contexts):
+                dataclasses.replace(context, args=args, kwargs=kwargs, return_=return_)()
+
+        return return_
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,38 +118,13 @@ class Decorator[** Params, Return]:
 
     def __call__(self, decoratee: Decoratee, /) -> Decorated:
         assert not isinstance(decoratee, Context)
-        decoratee.contexts = tuple()
 
         if inspect.iscoroutinefunction(decoratee):
-            @functools.wraps(decoratee)
-            async def decorated(*args: Params.args, **kwargs: Params.kwargs) -> Return:
-                async with contextlib.AsyncExitStack() as stack:
-                    for context in decoratee.contexts:
-                        await stack.enter_async_context(dataclasses.replace(context, args=args, kwargs=kwargs))
-
-                    return_ = await decoratee(*args, **kwargs)
-
-                    for context in reversed(decoratee.contexts):
-                        await context.replace(args=args, kwargs=kwargs, return_=return_)()
-
-                return return_
-
-            assert isinstance(decorated, AsyncDecorated)
+            decorated = inspect.markcoroutinefunction(AsyncDecorated(decoratee=decoratee))
         else:
-            @functools.wraps(decoratee)
-            def decorated(*args: Params.args, **kwargs: Params.kwargs) -> Return:
-                with contextlib.ExitStack() as stack:
+            decorated = MultiDecorated(decoratee=decoratee)
+        decorated = functools.wraps(decoratee)(decorated)
 
-                    for context in decoratee.contexts:
-                        stack.enter_context(dataclasses.replace(context, args=args, kwargs=kwargs))
-
-                    return_ = decoratee(*args, **kwargs)
-
-                    for context in reversed(decoratee.contexts):
-                        context.replace(args=args, kwargs=kwargs, return_=return_)()
-
-                return return_
-
-            assert isinstance(decorated, MultiDecorated)
+        assert isinstance(decorated, Decorated)
 
         return decorated
