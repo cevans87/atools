@@ -43,7 +43,8 @@ class Context[** Params, Return](abc.ABC):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncContext[** Params, Return](Context[Params, Return], abc.ABC):
-    __call__: typing.ClassVar[typing.Callable[[], typing.Awaitable[None]]]
+    async def __call__(self) -> None:
+        pass
 
     async def __aenter__(self):
         return self
@@ -54,7 +55,9 @@ class AsyncContext[** Params, Return](Context[Params, Return], abc.ABC):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiContext[** Params, Return](Context[Params, Return], abc.ABC):
-    __call__: typing.ClassVar[typing.Callable[[], None]]
+
+    def __call__(self) -> None:
+        pass
 
     def __enter__(self):
         return self
