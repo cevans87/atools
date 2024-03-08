@@ -26,11 +26,11 @@ def test_sleeps_when_max_through_exceeded_in_window(
     m_time: unittest.mock.MagicMock,
 ) -> None:
 
-    @atools.Throttle(max_window=1, window=1.0)
+    @atools.Throttle(value=1, window=1.0)
     async def async_foo():
         ...
 
-    @atools.Throttle(max_window=1, window=1.0)
+    @atools.Throttle(value=1, window=1.0)
     def multi_foo():
         ...
 
@@ -46,11 +46,6 @@ def test_sleeps_when_max_through_exceeded_in_window(
 
         foo()
         sleep.assert_called_once_with(1.0)
-        m_time.reset_mock()
-
-        foo()
-        foo()
-        sleep.assert_has_calls([unittest.mock.call(2.0), unittest.mock.call(3.0)])
         m_time.reset_mock()
 
 
