@@ -41,7 +41,7 @@ class AIMDSemaphore(abc.ABC):
 
     n_holder: typing.Annotated[int, annotated_types.Ge(0)] = 0
     n_waiter: typing.Annotated[int, annotated_types.Ge(0)] = 0
-    n_window: typing.Annotated[int, annotated_types.Ge(0)] = sys.maxsize
+    n_window: typing.Annotated[int, annotated_types.Ge(0)] = 0
 
     # Hard maximums. Dynamic `value` will never exceed hard maximum.
     MAX_HOLDER: typing.Annotated[int, annotated_types.Ge(1)]
@@ -60,49 +60,40 @@ class AIMDSemaphore(abc.ABC):
         if self.MAX_HOLDER + self.MAX_WAITER <= self.n_holder + self.n_waiter:
             raise Exception(f'Throttle max waiter limit {self.MAX_WAITER} exceeded.')
 
-        # FIXME this doesn't take care of the nth+1 through the window, the one that should take care of resetting the
-        #  window after sleeping.
         match (
             (self.n_holder < self.value),
             (
                 None if self.window is None
-                else False if self.n_window < self.MAX_WINDOW
+                else -1 if self.n_window < self.MAX_WINDOW
+                else 1 if self.n_window > self.MAX_WINDOW
                 else time.time()
             )
         ):
             case False, None:
                 yield None
-                self.n_holder += 1
-            case False, False:
-                self.n_holder += 1
-                self.n_window += 1
+            case False, -1:
                 yield None
-            case False, float(now) if self.window_end <= now:
-                self.condition.notify(min(self.n_window, max(0, self.n_waiter)))
+                self.n_window += 1
+            case _, float(now) if self.window_end <= now:
+                yield None
+                self.condition.notify(min(self.n_window, self.n_waiter))
                 self.window_end = now + self.window
                 self.n_window = 1
-                yield None
-            case False, float(now) if now < self.window_end:
-                self.n_waiter += 1
+            case _, float(now) if now < self.window_end:
+                yield lambda: self.pause(self.window_end - now)
+                self.condition.notify(min(self.n_window, self.n_waiter))
+                self.window_end += self.window
+                self.n_window = 1
+            case _, 1:
                 yield lambda: self.condition.wait_for(
                     lambda: self.n_holder < self.value and self.n_window < self.MAX_WINDOW
                 )
-                self.n_waiter -= 1
+                self.n_window += 1
             case True, None:
                 self.n_waiter += 1
                 yield lambda: self.condition.wait_for(lambda: self.n_holder < self.value)
                 self.n_waiter -= 1
-            case True, False:
-                self.n_waiter += 1
-                yield lambda: self.condition.wait_for(
-                    lambda: self.n_holder < self.value and self.n_window < self.MAX_WINDOW
-                )
-                self.n_waiter -= 1
-            case True, float(now) if self.window_end <= now:
-                self.window_end = now + self.window
-                self.n_window = 1
-                yield None
-            case True, float(now) if now < self.window_end:
+            case True, -1:
                 self.n_waiter += 1
                 yield lambda: self.condition.wait_for(
                     lambda: self.n_holder < self.value and self.n_window < self.MAX_WINDOW
@@ -140,7 +131,9 @@ class AsyncAIMDSemaphore(AIMDSemaphore):
     condition: asyncio.Condition = dataclasses.field(default_factory=asyncio.Condition)
 
     async def pause(self, penalty: Penalty) -> None:
+        self.condition.release()
         await asyncio.sleep(penalty)
+        await self.condition.acquire()
 
     async def acquire(self) -> None:
         async with self.condition:
@@ -158,7 +151,9 @@ class MultiAIMDSemaphore(AIMDSemaphore):
     condition: threading.Condition = dataclasses.field(default_factory=threading.Condition)
 
     def pause(self, penalty: Penalty) -> None:
+        self.condition.release()
         time.sleep(penalty)
+        self.condition.acquire()
 
     def acquire(self) -> None:
         with self.condition:

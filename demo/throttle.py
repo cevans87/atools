@@ -1,12 +1,19 @@
+import concurrent.futures
 import datetime
+import time
 
 import atools
 
 
-@atools.Throttle(max_window=1, window=1.0)
-def foo() -> None:
+@atools.Throttle(keygen=lambda arg: arg)
+def foo(arg) -> None:
     print(f'{datetime.datetime.now()}')
+    time.sleep(1)
 
 
-while True:
-    foo()
+with concurrent.futures.ThreadPoolExecutor(max_workers=1024) as executor:
+    for _ in range(1024):
+        executor.submit(foo)
+
+
+time.sleep(600)
