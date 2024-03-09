@@ -1,6 +1,8 @@
 import asyncio
+import concurrent.futures
 import functools
 import inspect
+import threading
 import unittest.mock
 import pytest
 
@@ -26,11 +28,11 @@ def test_sleeps_when_max_through_exceeded_in_window(
     m_time: unittest.mock.MagicMock,
 ) -> None:
 
-    @atools.Throttle(value=1, window=1.0)
+    @atools.Throttle(start=1, window=1.0)
     async def async_foo():
         ...
 
-    @atools.Throttle(value=1, window=1.0)
+    @atools.Throttle(start=1, window=1.0)
     def multi_foo():
         ...
 
@@ -49,14 +51,31 @@ def test_sleeps_when_max_through_exceeded_in_window(
         m_time.reset_mock()
 
 
-def test_multiple_through_starts_at_one(m_time: unittest.mock.MagicMock) -> None:
+@pytest.mark.asyncio
+async def test_value_starts_at_one(
+    m_asyncio: unittest.mock.MagicMock,
+    m_time: unittest.mock.MagicMock,
+) -> None:
 
-    @atools.Throttle(max_window=4, window=1.0)
-    def foo():
-        ...
+    flag = False
+    cond = asyncio.Condition()
 
-    m_time.time.return_value = 0.0
-    foo()
-    foo()
-    m_time.sleep.assert_called_once_with(1.0)
-    m_time.reset_mock()
+    @atools.Throttle(hi=4, window=1.0)
+    async def foo():
+        nonlocal flag
+        flag = True
+        cond.notify_all()
+        await cond.wait_for(lambda: not flag)
+
+    fut0 = asyncio.ensure_future(foo())
+    await cond.wait_for(lambda: flag)
+
+    fut1 = asyncio.ensure_future(foo())
+    await fut1.send(None)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        m_time.time.return_value = 0.0
+        executor.submit(foo)
+        executor.submit(foo)
+        m_time.sleep.assert_called_once_with(1.0)
+        m_time.reset_mock()

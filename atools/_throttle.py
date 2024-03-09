@@ -33,8 +33,8 @@ class Exception(_contexts.Exception):  # noqa
 @dataclasses.dataclass(kw_only=True)
 class AIMDSemaphore(abc.ABC):
 
-    max_: int
-    min_: int
+    hi: int
+    lo: int
     hold: int = ...
     value: int
     window: typing.Annotated[float, annotated_types.Ge(0.0)]
@@ -47,20 +47,16 @@ class AIMDSemaphore(abc.ABC):
     condition: asyncio.Condition | threading.Condition
 
     def __post_init__(self) -> None:
-        self.hold = self.max_ - self.value
+        self.hold = self.hi - self.value
         self.checkpoint = time.time() + self.window
 
     def _acquire(self) -> typing.Generator[typing.Callable[[], typing.Awaitable[None] | None], None, None]:
-        # Having max_holders/holders be a part of this check looks odd, but it averts a race condition where a lot of
-        #  waiters have built up and would have immediately become holders if just given a moment. i.e., we only want to
-        #  count waiters that are blocked waiting.
-
         self.value -= 1
 
         if 0 <= self.value:
             pass
-        elif self.value < self.min_:
-            raise Exception(f'Throttle minimum {self.min_} exceeded.')
+        elif self.value < self.lo:
+            raise Exception(f'Throttle minimum {self.lo} exceeded.')
         elif not self.window:
             yield lambda: self.condition.wait_for(lambda: 0 <= self.value)
         else:
@@ -68,7 +64,7 @@ class AIMDSemaphore(abc.ABC):
                 yield lambda: self._sleep(self.checkpoint - now)
                 self.hold -= 1 if self.hold else 0
             self.checkpoint = max(now, self.checkpoint) + self.window
-            self.value = self.max_ - self.hold
+            self.value = self.hi - self.hold
 
         if self.penalty:
             yield lambda: self._sleep(self.penalty)
@@ -82,18 +78,18 @@ class AIMDSemaphore(abc.ABC):
 
         if ok:
             self.penalty = 0.0
-            if self.value * 2 <= self.hold:
+            if self.hi - self.hold - max(0, self.value) <= max(0, self.value):
                 self.value += 1
                 self.hold -= 1
                 self.condition.notify(1)
         elif self.penalty:
             self.penalty *= 2
-        elif self.hold == self.max_:
+        elif self.hold == self.hi:
             self.penalty = 1.0
         elif self.penalty:
             self.penalty *= 2
         else:
-            exchange = (self.max_ - self.hold) // 2
+            exchange = (self.hi - self.hold) // 2
             self.hold += exchange
             self.value -= exchange
 
@@ -147,9 +143,9 @@ class MultiAIMDSemaphore(AIMDSemaphore):
 class Context[** Params, Return](_contexts.Context, abc.ABC):
     keygen: typing.Callable[Params, typing.Hashable]
     lock: dataclasses.Field[Lock]
-    max_: int
-    min_: int
-    value: int
+    hi: int
+    lo: int
+    start: int
     window: typing.Annotated[float, annotated_types.Ge(0.0)]
     semaphores: dict[typing.Hashable, AIMDSemaphore]
 
@@ -163,9 +159,9 @@ class AsyncContext[** Params, Return](Context[Params, Return], _contexts.AsyncCo
         await self.semaphores.setdefault(
             self.keygen(*self.args, **self.kwargs),
             AsyncAIMDSemaphore(
-                max_=self.max_,
-                value=self.value,
-                min_=self.min_,
+                hi=self.hi,
+                value=self.start,
+                lo=self.lo,
                 window=self.window,
             )
         ).acquire()
@@ -184,7 +180,7 @@ class AsyncContext[** Params, Return](Context[Params, Return], _contexts.AsyncCo
         exc_tb: types.TracebackType | None,
     ) -> None:
         async with self.lock:
-            semaphore = self.semaphores[self.key]
+            semaphore = self.semaphores[self.keygen(*self.args, **self.kwargs)]
         match exc_type, exc_val, exc_tb:
             case None, None, None:
                 await semaphore.release(ok=True)
@@ -201,9 +197,9 @@ class MultiContext[** Params, Return](Context[Params, Return], _contexts.MultiCo
         self.semaphores.setdefault(
             self.keygen(*self.args, **self.kwargs),
             MultiAIMDSemaphore(
-                max_=self.max_,
-                value=self.value,
-                min_=self.min_,
+                hi=self.hi,
+                lo=self.lo,
+                value=self.start,
                 window=self.window,
             )
         ).acquire()
@@ -230,15 +226,15 @@ class Decorator[** Params, Return]:
     # TODO: make a sync and async version of the key return.
     keygen: typing.Callable[Params, typing.Hashable] = lambda *args, **kwargs: None
     # How many callees are allowed through concurrently before additional callees become waiters.
-    max_: int = sys.maxsize
+    hi: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
 
     # How many callees are allowed through or to wait concurrently before additional callees are rejected.
-    min_: int = -sys.maxsize - 1
+    lo: typing.Annotated[int, annotated_types.Le(0)] = -sys.maxsize - 1
 
     # How many concurrent tokens to initialize with. This will never exceed given `soft` or `hard` values. Scaling
     #  follows AIMD control-flow rules. if this value is 1 and calls continue to fail, acquiring a token will incur an
     #  exponentially-increasing wait starting at 1 second before allowing the context to move forward.
-    value: typing.Annotated[int, annotated_types.Gt(0)] = 1
+    start: typing.Annotated[int, annotated_types.Gt(0)] = 1
     window: typing.Annotated[float, annotated_types.Ge(0.0)] = 0.0
 
     Exception: typing.ClassVar = Exception
@@ -262,19 +258,19 @@ class Decorator[** Params, Return]:
         if inspect.iscoroutinefunction(decoratee):
             context = AsyncContext(
                 keygen=self.keygen,
-                max_=self.max_,
-                min_=self.min_,
+                hi=self.hi,
+                lo=self.lo,
                 signature=inspect.signature(decoratee),
-                value=self.value,
+                start=self.start,
                 window=self.window,
             )
         else:
             context = MultiContext(
                 keygen=self.keygen,
-                max_=self.max_,
-                min_=self.min_,
+                hi=self.hi,
+                lo=self.lo,
                 signature=inspect.signature(decoratee),
-                value=self.value,
+                start=self.start,
                 window=self.window,
             )
 
