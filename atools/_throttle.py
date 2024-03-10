@@ -1,6 +1,4 @@
 import abc
-import collections
-import contextlib
 import inspect
 import sys
 
@@ -15,15 +13,9 @@ import typing
 from . import _contexts
 
 type Condition = asyncio.Condition | threading.Condition
-type Heap[T] = list[T]
-type History = collections.deque[tuple[Time, typing.Annotated, annotated_types.Ge(0)]]
 type Lock = asyncio.Lock | threading.Lock
 type Penalty = typing.Annotated[float, annotated_types.Gt(0.0)]
-type Pause = typing.Annotated[float, annotated_types.Gt(0.0)]
 type Time = typing.Annotated[float, annotated_types.Gt(0.0)]
-
-type EndFrame = typing.Annotated[float, annotated_types.Gt(0.0)]
-type Window = typing.Annotated[float, annotated_types.Gt(0.0)]
 
 
 class Exception(_contexts.Exception):  # noqa
@@ -32,74 +24,78 @@ class Exception(_contexts.Exception):  # noqa
 
 @dataclasses.dataclass(kw_only=True)
 class AIMDSemaphore(abc.ABC):
+    max_herd: int
+    max_hold: int
+    max_wait: int
 
-    hi: int
-    lo: int
-    hold: int = ...
-    value: int
+    value: typing.Annotated[int, annotated_types.Gt(0)]
     window: typing.Annotated[float, annotated_types.Ge(0.0)]
+    checkpoint: typing.Annotated[float, annotated_types.Ge(0.0)]
 
+    n_herd: int = 0
+    n_hold: int = 0
+    n_wait: int = 0
     penalty: float = 0.0
-    checkpoint: float = 0.0
 
     # TODO: Perhaps change this to a statically-sized list of _buckets_ or just a counter for start times in the last
     #  window. Growing and shrinking a heap will cause non-trivial overhead.
     condition: asyncio.Condition | threading.Condition
 
-    def __post_init__(self) -> None:
-        self.hold = self.hi - self.value
-        self.checkpoint = time.time() + self.window
-
     def _acquire(self) -> typing.Generator[typing.Callable[[], typing.Awaitable[None] | None], None, None]:
-        self.value -= 1
 
-        if 0 <= self.value:
-            pass
-        elif self.value < self.lo:
-            raise Exception(f'Throttle minimum {self.lo} exceeded.')
-        elif not self.window:
-            yield lambda: self.condition.wait_for(lambda: 0 <= self.value)
-        else:
-            if (now := time.time()) < self.checkpoint:
-                yield lambda: self._sleep(self.checkpoint - now)
-                self.hold -= 1 if self.hold else 0
-            self.checkpoint = max(now, self.checkpoint) + self.window
-            self.value = self.hi - self.hold
+        self.n_herd += 1
+        while self.n_herd > self.max_herd:
+            if self.n_herd > self.max_herd + 1:
+                yield from self._wait_for(lambda: self.n_herd < self.max_herd)
+            else:
+                if (now := time.time()) < self.checkpoint:
+                    yield lambda: self._sleep(self.checkpoint - now)
+                self.checkpoint = self.checkpoint + (self.checkpoint - now) + self.window
+                self.n_herd = 0
+                self.condition.notify(min(self.n_wait, self.max_herd))
+            self.n_herd += 1
+
+        while self.n_hold >= self.value:
+            yield from self._wait_for(lambda: self.n_hold < self.value)
+        self.n_hold += 1
 
         if self.penalty:
             yield lambda: self._sleep(self.penalty)
 
     def _release(self, ok: bool) -> None:
-        if self.window:
-            return
-
-        self.value += 1
-        self.condition.notify(1)
-
         if ok:
             self.penalty = 0.0
-            if self.hi - self.hold - max(0, self.value) <= max(0, self.value):
+            if self.n_hold > self.value // 2:
                 self.value += 1
-                self.hold -= 1
                 self.condition.notify(1)
-        elif self.penalty:
-            self.penalty *= 2
-        elif self.hold == self.hi:
-            self.penalty = 1.0
+        elif 1 < self.value:
+            self.value //= 2
         elif self.penalty:
             self.penalty *= 2
         else:
-            exchange = (self.hi - self.hold) // 2
-            self.hold += exchange
-            self.value -= exchange
+            self.penalty = 1.0
+
+        self.n_hold -= 1
+        if self.n_hold < self.value:
+            self.condition.notify(1)
 
     @abc.abstractmethod
     def _sleep(self, time_: Time) -> typing.Awaitable[None] | None: ...
 
+    def _wait_for(self, predicate: typing.Callable[[], bool]) -> None:
+        if self.n_wait >= self.max_wait:
+            raise Exception(f'{self.max_wait=} exceeded.')
+
+        self.n_wait += 1
+        try:
+            yield lambda: self.condition.wait_for(predicate=predicate)
+        finally:
+            self.n_wait -= 1
+
 
 @dataclasses.dataclass(kw_only=True)
 class AsyncAIMDSemaphore(AIMDSemaphore):
-    condition: asyncio.Condition = dataclasses.field(default_factory=asyncio.Condition)
+    condition: asyncio.Condition = dataclasses.field(default_factory=lambda: asyncio.Condition())
 
     async def _sleep(self, penalty: Penalty) -> None:
         self.condition.release()
@@ -111,7 +107,10 @@ class AsyncAIMDSemaphore(AIMDSemaphore):
     async def acquire(self) -> None:
         async with self.condition:
             for call in self._acquire():
-                await call()
+                try:
+                    await call()
+                except TypeError as e:
+                    raise
 
     async def release(self, ok: bool) -> None:
         async with self.condition:
@@ -120,7 +119,7 @@ class AsyncAIMDSemaphore(AIMDSemaphore):
 
 @dataclasses.dataclass(kw_only=True)
 class MultiAIMDSemaphore(AIMDSemaphore):
-    condition: threading.Condition = dataclasses.field(default_factory=threading.Condition)
+    condition: threading.Condition = dataclasses.field(default_factory=lambda: threading.Condition())
 
     def _sleep(self, time_: Time) -> None:
         self.condition.release()
@@ -143,8 +142,9 @@ class MultiAIMDSemaphore(AIMDSemaphore):
 class Context[** Params, Return](_contexts.Context, abc.ABC):
     keygen: typing.Callable[Params, typing.Hashable]
     lock: dataclasses.Field[Lock]
-    hi: int
-    lo: int
+    max_herd: int
+    max_hold: int
+    wait_hold: int
     start: int
     window: typing.Annotated[float, annotated_types.Ge(0.0)]
     semaphores: dict[typing.Hashable, AIMDSemaphore]
@@ -159,9 +159,11 @@ class AsyncContext[** Params, Return](Context[Params, Return], _contexts.AsyncCo
         await self.semaphores.setdefault(
             self.keygen(*self.args, **self.kwargs),
             AsyncAIMDSemaphore(
-                hi=self.hi,
+                checkpoint=time.time() + self.window,
+                max_herd=self.max_herd,
+                max_hold=self.max_hold,
+                max_wait=self.wait_hold,
                 value=self.start,
-                lo=self.lo,
                 window=self.window,
             )
         ).acquire()
@@ -197,8 +199,10 @@ class MultiContext[** Params, Return](Context[Params, Return], _contexts.MultiCo
         self.semaphores.setdefault(
             self.keygen(*self.args, **self.kwargs),
             MultiAIMDSemaphore(
-                hi=self.hi,
-                lo=self.lo,
+                checkpoint=time.time() + self.window,
+                max_herd=self.max_herd,
+                max_hold=self.max_hold,
+                max_wait=self.wait_hold,
                 value=self.start,
                 window=self.window,
             )
@@ -225,11 +229,13 @@ class MultiContext[** Params, Return](Context[Params, Return], _contexts.MultiCo
 class Decorator[** Params, Return]:
     # TODO: make a sync and async version of the key return.
     keygen: typing.Callable[Params, typing.Hashable] = lambda *args, **kwargs: None
+    max_herd: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
+
     # How many callees are allowed through concurrently before additional callees become waiters.
-    hi: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
+    max_hold: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
 
     # How many callees are allowed through or to wait concurrently before additional callees are rejected.
-    lo: typing.Annotated[int, annotated_types.Le(0)] = -sys.maxsize - 1
+    wait_hold: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
 
     # How many concurrent tokens to initialize with. This will never exceed given `soft` or `hard` values. Scaling
     #  follows AIMD control-flow rules. if this value is 1 and calls continue to fail, acquiring a token will incur an
@@ -258,8 +264,9 @@ class Decorator[** Params, Return]:
         if inspect.iscoroutinefunction(decoratee):
             context = AsyncContext(
                 keygen=self.keygen,
-                hi=self.hi,
-                lo=self.lo,
+                max_herd=self.max_herd,
+                max_hold=self.max_hold,
+                wait_hold=self.wait_hold,
                 signature=inspect.signature(decoratee),
                 start=self.start,
                 window=self.window,
@@ -267,8 +274,9 @@ class Decorator[** Params, Return]:
         else:
             context = MultiContext(
                 keygen=self.keygen,
-                hi=self.hi,
-                lo=self.lo,
+                max_herd=self.max_herd,
+                max_hold=self.max_hold,
+                wait_hold=self.wait_hold,
                 signature=inspect.signature(decoratee),
                 start=self.start,
                 window=self.window,

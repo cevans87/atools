@@ -1,19 +1,33 @@
 import asyncio
 import concurrent.futures
+import dataclasses
 import functools
 import inspect
 import threading
 import unittest.mock
 import pytest
+import typing
 
 import atools
 
-inspect.getmodule(atools.Throttle)
+module = inspect.getmodule(atools.Throttle)
 
 
 @pytest.fixture
 def m_asyncio() -> unittest.mock.MagicMock:
-    with unittest.mock.patch.object(inspect.getmodule(atools.Throttle), 'asyncio', autospec=True) as m_asyncio:
+    with unittest.mock.patch.object(module, 'asyncio', autospec=True) as m_asyncio:
+        yield m_asyncio
+
+
+@pytest.fixture
+def m_threading() -> unittest.mock.MagicMock:
+    with (
+        unittest.mock.patch.object(
+            module, 'asyncio.Condition', autospec=True, new_callable=unittest.mock.MagicProxy
+        ) as m_condition,
+        unittest.mock.patch.object(module, 'asyncio', autospec=True) as m_asyncio
+    ):
+        m_asyncio.Condition.side_effect = asyncio.Condition
         yield m_asyncio
 
 
@@ -23,59 +37,38 @@ def m_time() -> unittest.mock.MagicMock:
         yield m_time
 
 
-def test_sleeps_when_max_through_exceeded_in_window(
-    m_asyncio: unittest.mock.MagicMock,
-    m_time: unittest.mock.MagicMock,
-) -> None:
+def test_sleeps_when_max_herd_exceeded_in_window(m_threading, m_time) -> None:
 
-    @atools.Throttle(start=1, window=1.0)
-    async def async_foo():
+    @atools.Throttle(max_herd=1, window=1.0)
+    def foo():
         ...
 
-    @atools.Throttle(start=1, window=1.0)
-    def multi_foo():
-        ...
+    m_time.time.return_value = 0.0
 
-    for foo, sleep in [
-        (lambda: asyncio.run(async_foo()), m_asyncio.sleep),
-        (multi_foo, m_time.sleep),
-    ]:
-        m_time.time.return_value = 0.0
+    foo()
+    m_time.sleep.assert_not_called()
 
-        foo()
-        sleep.assert_not_called()
-        m_time.reset_mock()
-
-        foo()
-        sleep.assert_called_once_with(1.0)
-        m_time.reset_mock()
+    foo()
+    m_time.sleep.assert_called_once_with(1.0)
 
 
 @pytest.mark.asyncio
-async def test_value_starts_at_one(
-    m_asyncio: unittest.mock.MagicMock,
-    m_time: unittest.mock.MagicMock,
-) -> None:
+async def test_value_starts_at_one() -> None:
+    semaphore = asyncio.Semaphore(0)
 
-    flag = False
-    cond = asyncio.Condition()
-
-    @atools.Throttle(hi=4, window=1.0)
+    @atools.Throttle(max_hold=2)
     async def foo():
-        nonlocal flag
-        flag = True
-        cond.notify_all()
-        await cond.wait_for(lambda: not flag)
+        async with semaphore:
+            ...
+    foos = [asyncio.ensure_future(foo()), asyncio.ensure_future(foo()), asyncio.ensure_future(foo())]
+    done, pending = await asyncio.wait(foos, timeout=0.1)
+    assert len(semaphore._waiters) == 1
+    semaphore.release()
 
-    fut0 = asyncio.ensure_future(foo())
-    await cond.wait_for(lambda: flag)
+    done, pending = await asyncio.wait(pending, timeout=0.1)
+    assert len(semaphore._waiters) == 2
+    semaphore.release()
+    semaphore.release()
 
-    fut1 = asyncio.ensure_future(foo())
-    await fut1.send(None)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        m_time.time.return_value = 0.0
-        executor.submit(foo)
-        executor.submit(foo)
-        m_time.sleep.assert_called_once_with(1.0)
-        m_time.reset_mock()
+    done, pending = await asyncio.wait(pending, timeout=0.1)
+    assert not pending

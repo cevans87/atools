@@ -5,7 +5,7 @@ import time
 import atools
 
 
-@atools.Throttle(value=1, max_=2, window=1.0)
+@atools.Throttle(value=1, max_holders=2, window=1.0)
 def foo(arg) -> None:
     print(f'{datetime.datetime.now()}')
     time.sleep(1)
