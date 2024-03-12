@@ -1,34 +1,45 @@
 import asyncio
-import concurrent.futures
-import dataclasses
-import functools
 import inspect
-import threading
 import unittest.mock
 import pytest
-import typing
 
 import atools
 
 module = inspect.getmodule(atools.Throttle)
 
 
+# FIXME: Multi tests are missing. This suite heavily relies upon determining whether coroutines are running vs
+#  suspended (via asyncio.eager_task_factory). Ideally, similar functionality exists for threading. Otherwise, we need
+#  to find a way to determine that thread execution has reached a certain point. Ideally without mocking synchronization
+#  primitives.
+
+
+@pytest.fixture(autouse=True)
+def event_loop() -> asyncio.AbstractEventLoop:
+    """All async tests execute eagerly.
+
+    Upon task creation return, we can be sure that the task has gotten to a point that it is either blocked or done.
+    """
+
+    eager_loop = asyncio.new_event_loop()
+    eager_loop.set_task_factory(asyncio.eager_task_factory)
+    yield eager_loop
+    eager_loop.close()
+
+
 @pytest.fixture
 def m_asyncio() -> unittest.mock.MagicMock:
-    with unittest.mock.patch.object(module, 'asyncio', autospec=True) as m_asyncio:
-        yield m_asyncio
+    with (
+        unittest.mock.patch.object(module.asyncio, 'sleep', autospec=True),
+        #unittest.mock.patch.object(module, 'asyncio', autospec=True, wraps=module.asyncio) as m_asyncio,
+    ):
+        yield module.asyncio
 
 
 @pytest.fixture
 def m_threading() -> unittest.mock.MagicMock:
-    with (
-        unittest.mock.patch.object(
-            module, 'asyncio.Condition', autospec=True, new_callable=unittest.mock.MagicProxy
-        ) as m_condition,
-        unittest.mock.patch.object(module, 'asyncio', autospec=True) as m_asyncio
-    ):
-        m_asyncio.Condition.side_effect = asyncio.Condition
-        yield m_asyncio
+    with unittest.mock.patch.object(module, 'threading', autospec=True, wraps=module.threading) as m_threading:
+        yield m_threading
 
 
 @pytest.fixture
@@ -37,38 +48,65 @@ def m_time() -> unittest.mock.MagicMock:
         yield m_time
 
 
-def test_sleeps_when_max_herd_exceeded_in_window(m_threading, m_time) -> None:
+@pytest.mark.asyncio
+async def test_async_sleeps_when_max_herd_exceeded_in_window(m_asyncio, m_time) -> None:
 
     @atools.Throttle(max_herd=1, window=1.0)
-    def foo():
+    async def foo():
         ...
 
     m_time.time.return_value = 0.0
+    await foo()
+    m_asyncio.sleep.assert_not_called()
 
-    foo()
-    m_time.sleep.assert_not_called()
-
-    foo()
-    m_time.sleep.assert_called_once_with(1.0)
+    await foo()
+    m_asyncio.sleep.assert_called_once_with(1.0)
 
 
 @pytest.mark.asyncio
-async def test_value_starts_at_one() -> None:
-    semaphore = asyncio.Semaphore(0)
+@pytest.mark.parametrize('start', [1, 2, 10])
+async def test_async_value_starts_at_start(start: int) -> None:
+    event = asyncio.Event()
+    n_running = 0
 
-    @atools.Throttle(max_hold=2)
+    @atools.Throttle(start=start)
     async def foo():
-        async with semaphore:
-            ...
-    foos = [asyncio.ensure_future(foo()), asyncio.ensure_future(foo()), asyncio.ensure_future(foo())]
-    done, pending = await asyncio.wait(foos, timeout=0.1)
-    assert len(semaphore._waiters) == 1
-    semaphore.release()
+        nonlocal n_running
+        n_running += 1
+        await event.wait()
+        n_running -= 1
 
-    done, pending = await asyncio.wait(pending, timeout=0.1)
-    assert len(semaphore._waiters) == 2
-    semaphore.release()
-    semaphore.release()
+    async with asyncio.TaskGroup() as tg:
+        for _ in range(start * 2):
+            tg.create_task(foo())
+        assert n_running == start
+        event.set()
 
-    done, pending = await asyncio.wait(pending, timeout=0.1)
-    assert not pending
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('start', [1, 2, 10])
+async def test_exception_cuts_value_in_half(start) -> None:
+    event = asyncio.Event()
+    fail = True
+    n_running = 0
+
+    @atools.Throttle(start=start)
+    async def foo():
+        nonlocal fail
+        if fail:
+            raise Exception()
+
+        nonlocal n_running
+        n_running += 1
+        await event.wait()
+        n_running -= 1
+
+    with pytest.raises(Exception):
+        await foo()
+    fail = False
+
+    async with asyncio.TaskGroup() as tg:
+        for _ in range(start * 2):
+            tg.create_task(foo())
+        assert n_running == start // 2
+        event.set()
