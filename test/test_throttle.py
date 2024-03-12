@@ -29,10 +29,7 @@ def event_loop() -> asyncio.AbstractEventLoop:
 
 @pytest.fixture
 def m_asyncio() -> unittest.mock.MagicMock:
-    with (
-        unittest.mock.patch.object(module.asyncio, 'sleep', autospec=True),
-        #unittest.mock.patch.object(module, 'asyncio', autospec=True, wraps=module.asyncio) as m_asyncio,
-    ):
+    with unittest.mock.patch.object(module.asyncio, 'sleep', autospec=True):
         yield module.asyncio
 
 
@@ -51,7 +48,7 @@ def m_time() -> unittest.mock.MagicMock:
 @pytest.mark.asyncio
 async def test_async_sleeps_when_max_herd_exceeded_in_window(m_asyncio, m_time) -> None:
 
-    @atools.Throttle(max_herd=1, window=1.0)
+    @atools.Throttle(max_units=1, window=1.0)
     async def foo():
         ...
 

@@ -1,11 +1,10 @@
 import abc
-import collections
-import inspect
-import sys
-
 import annotated_types
 import asyncio
 import dataclasses
+import heapq
+import inspect
+import sys
 import threading
 import time
 import types
@@ -28,12 +27,12 @@ class AIMDSemaphore(abc.ABC):
     """Semaphore with AIMD behavior.
 
     Definitions:
-        - holders - Callers that have acquired a semaphore value but have not released are holders.
-        - herders - Holders that are allowed to begin execution within the current temporal `frame` are herders.
-        - waiters - Callers that are blocked either on the herd or hold limit are waiters.
+        - hold - Callers that have acquired a semaphore value but have not released.
+        - unit - Callers that `hold` and are allowed to begin execution within the current temporal `slice`.
+        - wait - Callers that are waiting because the `max_herd` or `max_hold` limit would be exceeded.
 
-        - frame - Discreet temporal checkpoints after which another `max_herders` herders are allowed through.
-        - `window` - The amount of time that must pass after an individual frame expires before it is replenished.
+        - slice - Discreet temporal checkpoint after which another `max_units` units are allowed through.
+        - window - The amount of time that must pass after an individual slice expires before it is replenished.
 
     'value' behavior:
         - No more than the current `value` callers are approved to `hold`.
@@ -45,86 +44,103 @@ class AIMDSemaphore(abc.ABC):
 
     Value
     """
-    max_herd: int
-    max_hold: int
-    max_wait: int
+    max_holds: int
+    max_panes: int
+    max_units: int
+    max_waits: int
 
     value: int
-
-    frames: collections.deque[typing.Annotated[float, annotated_types.Ge(0.0)]]
     window: typing.Annotated[float, annotated_types.Ge(0.0)]
 
-    n_herd: int = ...
-    n_hold: int = 0
-    n_wait: int = 0
+    holds: int = 0
+    panes: list[float] = dataclasses.field(default_factory=list)
+    units: int = 0
+    waits: int = 0
 
-    sleeper = False
+    units_pending = False
 
-    herd_condition: asyncio.Condition | threading.Condition
-    hold_condition: asyncio.Condition | threading.Condition
+    holds_condition: asyncio.Condition | threading.Condition
+    units_condition: asyncio.Condition | threading.Condition
 
     def __post_init__(self) -> None:
-        self.n_herd = self.max_herd
+        self.units = self.max_units
 
     def _acquire_hold(self) -> typing.Generator[typing.Callable[[], typing.Awaitable[None] | None], None, None]:
-        while self.n_hold >= max(1, self.value):
-            yield from self._wait_for(self.hold_condition, lambda: self.n_hold < max(1, self.value))
-        self.n_hold += 1
+        while self.holds >= max(1, self.value):
+            yield from self._wait(self.holds_condition)
+        self.holds += 1
 
         if self.value <= 0:
-            yield lambda: self._sleep(self.hold_condition, 2.0 ** -self.value)
+            yield lambda: self._sleep(self.holds_condition, 2.0 ** -self.value)
 
-    def _acquire_herd(self) -> typing.Generator[typing.Callable[[], typing.Awaitable[None] | None], None, None]:
-        while self.n_herd >= self.max_herd:
-            if self.sleeper:
-                yield from self._wait_for(self.herd_condition, lambda: self.n_herd < self.max_herd)
+    def _acquire_unit(self) -> typing.Generator[typing.Callable[[], typing.Awaitable[None] | None], None, None]:
+        while self.units >= self.max_units:
+            if self.units_pending:
+                yield from self._wait(self.units_condition)
+            elif not self.panes:
+                self.units = 0
+                heapq.heappush(self.panes, time.time() + self.window)
+            elif self.panes[0] < (now := time.time()):
+                self.units = 0
+                heapq.heappushpop(self.panes, now + self.window)
+            elif len(self.panes) < self.max_panes:
+                self.units = 0
+                heapq.heappush(self.panes, now + self.window)
             else:
-                if (now := time.time()) < self.frames[0]:
-                    self.sleeper = True
-                    yield lambda: self._sleep(self.herd_condition, self.frames[0] - now)
-                    self.sleeper = False
-                self.frames.popleft()
-                self.frames.append(now + self.window)
-                self.n_herd = 0
-                self.herd_condition.notify(self.max_herd + 1)
-        self.n_herd += 1
+                self.units_pending = True
+                yield lambda: self._sleep(self.units_condition, self.panes[0] - now)
+                self.units_pending = False
+                self.units = 0
+                heapq.heappushpop(self.panes, self.panes[0] + self.window)
+                self.units_condition.notify(self.max_units + 1)
+        self.units += 1
 
     def _release(self, ok: bool) -> None:
         match ok:
             case True if self.value <= 0:
                 self.value = 1
-            case True if self.n_hold in range((self.value // 2) + 1, self.max_hold):
+            case True if self.holds in range((self.value // 2) + 1, self.max_holds):
                 self.value += 1
-                self.hold_condition.notify(1)
+                self.holds_condition.notify(1)
             case False if self.value > 0:
                 self.value //= 2
             case False:
                 self.value -= 1
 
-        self.n_hold -= 1
-        self.hold_condition.notify(1)
+        self.holds -= 1
+        self.holds_condition.notify(1)
 
     @abc.abstractmethod
     def _sleep(self, condition: asyncio.Condition | threading.Condition, time_: Time) -> typing.Awaitable[None] | None:
         raise NotImplemented
 
+    def _wait(self, condition: asyncio.Condition | threading.Condition) -> None:
+        if self.waits >= self.max_waits:
+            raise Exception(f'{self.max_waits=} exceeded.')
+
+        self.waits += 1
+        try:
+            yield lambda: condition.wait()
+        finally:
+            self.waits -= 1
+
     def _wait_for(
         self, condition: asyncio.Condition | threading.Condition, predicate: typing.Callable[[], bool]
-    ) -> None:
-        if self.n_wait >= self.max_wait:
-            raise Exception(f'{self.max_wait=} exceeded.')
+    ) -> typing.Generator[typing.Callable[[], typing.Awaitable[None] | None], None, None]:
+        if self.waits >= self.max_waits:
+            raise Exception(f'{self.max_waits=} exceeded.')
 
-        self.n_wait += 1
+        self.waits += 1
         try:
             yield lambda: condition.wait_for(predicate=predicate)
         finally:
-            self.n_wait -= 1
+            self.waits -= 1
 
 
 @dataclasses.dataclass(kw_only=True)
 class AsyncAIMDSemaphore(AIMDSemaphore):
-    herd_condition: asyncio.Condition = dataclasses.field(default_factory=lambda: asyncio.Condition())
-    hold_condition: asyncio.Condition = dataclasses.field(default_factory=lambda: asyncio.Condition())
+    holds_condition: asyncio.Condition = dataclasses.field(default_factory=lambda: asyncio.Condition())
+    units_condition: asyncio.Condition = dataclasses.field(default_factory=lambda: asyncio.Condition())
 
     async def _sleep(self, condition: asyncio.Condition, delay: float) -> None:
         condition.release()
@@ -134,22 +150,22 @@ class AsyncAIMDSemaphore(AIMDSemaphore):
             await condition.acquire()
 
     async def acquire(self) -> None:
-        async with self.hold_condition:
+        async with self.holds_condition:
             for call in self._acquire_hold():
                 await call()
-        async with self.herd_condition:
-            for call in self._acquire_herd():
+        async with self.units_condition:
+            for call in self._acquire_unit():
                 await call()
 
     async def release(self, ok: bool) -> None:
-        async with self.hold_condition:
+        async with self.holds_condition:
             self._release(ok)
 
 
 @dataclasses.dataclass(kw_only=True)
 class MultiAIMDSemaphore(AIMDSemaphore):
-    herd_condition: threading.Condition = dataclasses.field(default_factory=lambda: threading.Condition())
-    hold_condition: threading.Condition = dataclasses.field(default_factory=lambda: threading.Condition())
+    holds_condition: threading.Condition = dataclasses.field(default_factory=lambda: threading.Condition())
+    units_condition: threading.Condition = dataclasses.field(default_factory=lambda: threading.Condition())
 
     def _sleep(self, condition: threading.Condition, delay: float) -> None:
         condition.release()
@@ -159,15 +175,15 @@ class MultiAIMDSemaphore(AIMDSemaphore):
             condition.acquire()
 
     def acquire(self) -> None:
-        with self.hold_condition:
+        with self.holds_condition:
             for call in self._acquire_hold():
                 call()
-        with self.herd_condition:
-            for call in self._acquire_herd():
+        with self.units_condition:
+            for call in self._acquire_unit():
                 call()
 
     def release(self, ok: bool) -> None:
-        with self.hold_condition:
+        with self.holds_condition:
             self._release(ok)
 
 
@@ -175,9 +191,10 @@ class MultiAIMDSemaphore(AIMDSemaphore):
 class Context[** Params, Return](_contexts.Context, abc.ABC):
     keygen: typing.Callable[Params, typing.Hashable]
     lock: dataclasses.Field[Lock]
-    max_herd: int
-    max_hold: int
-    wait_hold: int
+    max_holds: int
+    max_panes: int
+    max_units: int
+    max_waits: int
     start: int
     frames: typing.Annotated[int, annotated_types.Gt(0)]
     window: typing.Annotated[float, annotated_types.Ge(0.0)]
@@ -193,10 +210,10 @@ class AsyncContext[** Params, Return](Context[Params, Return], _contexts.AsyncCo
         await self.semaphores.setdefault(
             self.keygen(*self.args, **self.kwargs),
             AsyncAIMDSemaphore(
-                frames=collections.deque([float('-inf') for _ in range(self.frames)], maxlen=self.frames),
-                max_herd=self.max_herd,
-                max_hold=self.max_hold,
-                max_wait=self.wait_hold,
+                max_holds=self.max_holds,
+                max_panes=self.max_panes,
+                max_units=self.max_units,
+                max_waits=self.max_waits,
                 value=self.start,
                 window=self.window,
             )
@@ -233,10 +250,10 @@ class MultiContext[** Params, Return](Context[Params, Return], _contexts.MultiCo
         self.semaphores.setdefault(
             self.keygen(*self.args, **self.kwargs),
             MultiAIMDSemaphore(
-                frames=collections.deque([float('-inf') for _ in range(self.frames)], maxlen=self.frames),
-                max_herd=self.max_herd,
-                max_hold=self.max_hold,
-                max_wait=self.wait_hold,
+                max_holds=self.max_holds,
+                max_panes=self.max_panes,
+                max_units=self.max_units,
+                max_waits=self.max_waits,
                 value=self.start,
                 window=self.window,
             )
@@ -264,13 +281,15 @@ class Decorator[** Params, Return]:
     frames: typing.Annotated[int, annotated_types.Gt(0)] = 1
     # TODO: make a sync and async version of the key return.
     keygen: typing.Callable[Params, typing.Hashable] = lambda *args, **kwargs: None
-    max_herd: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
 
     # How many callees are allowed through concurrently before additional callees become waiters.
-    max_hold: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
+    max_holds: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
+
+    max_panes: typing.Annotated[int, annotated_types.Gt(0)] = 1
+    max_units: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
 
     # How many callees are allowed through or to wait concurrently before additional callees are rejected.
-    wait_hold: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
+    max_waits: typing.Annotated[int, annotated_types.Gt(0)] = sys.maxsize
 
     # How many concurrent tokens to initialize with. This will never exceed given `soft` or `hard` values. Scaling
     #  follows AIMD control-flow rules. if this value is 1 and calls continue to fail, acquiring a token will incur an
