@@ -233,7 +233,7 @@ def test_bad_arg_does_not_parse(arg: Arg) -> None:
 def test_execute_hidden_subcommand_works() -> None:
     prefix = test_execute_hidden_subcommand_works.__name__
 
-    @atools.CLI(prefix, '_foo')
+    @atools.CLI(f'{prefix}._foo')
     def _foo(foo: str) -> dict[str, str]:
         return locals()
 
@@ -417,13 +417,13 @@ def test_cli_names_enforce_subcommand_structure() -> None:
     prefix = test_cli_names_enforce_subcommand_structure.__name__
 
     for suffix in ['foo.baz', 'foo.qux', 'bar.quux', 'bar.corge']:
-        @atools.CLI(prefix, suffix)
+        @atools.CLI(f'{prefix}.{suffix}')
         def entrypoint() -> dict[str, object]: ...
 
-    assert 'baz' in atools.CLI(prefix, 'foo').cli.format_help()
-    assert 'qux' in atools.CLI(prefix, 'foo').cli.format_help()
-    assert 'quux' in atools.CLI(prefix, 'bar').cli.format_help()
-    assert 'corge' in atools.CLI(prefix, 'bar').cli.format_help()
+    assert 'baz' in atools.CLI(f'{prefix}.foo').cli.format_help()
+    assert 'qux' in atools.CLI(f'{prefix}.foo').cli.format_help()
+    assert 'quux' in atools.CLI(f'{prefix}.bar').cli.format_help()
+    assert 'corge' in atools.CLI(f'{prefix}.bar').cli.format_help()
 
 
 def test_unresolved_annotation_raises_assertion_error() -> None:

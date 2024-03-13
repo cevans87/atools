@@ -4,8 +4,12 @@ import functools
 import contextlib
 import dataclasses
 import inspect
+import re
 import types
 import typing
+
+
+type Name = typing.Annotated[str, annotated_types.Predicate(str.isidentifier)]  # noqa
 
 
 class Exception(builtins.Exception):  # noqa
@@ -66,10 +70,24 @@ class MultiContext[** Params, Return](Context[Params, Return], abc.ABC):
         return None
 
 
+class Key(tuple[str, ...]):
+
+    def __str__(self) -> str:
+        return '.'.join(self)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class Register(abc.ABC):
+    decoratees: dict[Key, Decoratee] = dataclasses.field(default_factory=dict)
+    links: dict[Key, set[Name]] = dataclasses.field(default_factory=dict)
+
+
 @dataclasses.dataclass(kw_only=True)
 class Decorated[** Params, Return](abc.ABC):
     contexts: tuple[Context[Params, Return], ...] = ()
     decoratee: Decoratee[Params, Return]
+    key: Key
+    register: Register
 
     __call__: typing.ClassVar[typing.Callable[Params, typing.Awaitable[Return] | Return]]
 
@@ -112,6 +130,8 @@ class MultiDecorated[** Params, Return](Decorated[Params, Return]):
 
 @dataclasses.dataclass(frozen=True)
 class Decorator[** Params, Return]:
+    name: Name = ...
+    register: typing.ClassVar[Register] = Register()
 
     @typing.overload
     def __call__(self, decoratee: AsyncDecoratee[Params, Return], /) -> AsyncDecorated[Params, Return]: ...
@@ -119,15 +139,27 @@ class Decorator[** Params, Return]:
     @typing.overload
     def __call__(self, decoratee: MultiDecoratee[Params, Return], /) -> MultiDecorated[Params, Return]: ...
 
-    def __call__(self, decoratee: Decoratee, /) -> Decorated:
-        assert not isinstance(decoratee, Context)
+    def __call__(self, decoratee: Decoratee[Params, Return], /) -> Decorated[Params, Return]:
+
+        name = self.name if self.name is not ... else (
+            re.sub(r'.<.*>', '', '.'.join([decoratee.__module__, decoratee.__qualname__]))
+        )
+        key = Key([*name.split('.')])
+
+        for i in range(len(key)):
+            self.register.links.setdefault(key[:i], set()).add(key[i])
+        self.register.links.setdefault(key, set())
 
         if inspect.iscoroutinefunction(decoratee):
-            decorated = inspect.markcoroutinefunction(AsyncDecorated(decoratee=decoratee))
+            decorated = inspect.markcoroutinefunction(AsyncDecorated[Params, Return](
+                decoratee=decoratee, key=key, register=self.register
+            ))
         else:
-            decorated = MultiDecorated(decoratee=decoratee)
-        decorated = functools.wraps(decoratee)(decorated)
-
-        assert isinstance(decorated, Decorated)
+            decorated = MultiDecorated[Params, Return](decoratee=decoratee, key=key, register=self.register)
+        decorated = decorated.register.decoratees[decorated.key] = functools.wraps(decoratee)(decorated)
 
         return decorated
+
+    @property
+    def key(self) -> Key:
+        return Key([] if self.name is ... else [*re.sub(r'.<.*>', '', self.name).split('.')])

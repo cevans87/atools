@@ -10,7 +10,7 @@ import time
 import types
 import typing
 
-from . import _contexts
+from . import _base
 
 type Condition = asyncio.Condition | threading.Condition
 type Lock = asyncio.Lock | threading.Lock
@@ -18,7 +18,7 @@ type Penalty = typing.Annotated[float, annotated_types.Gt(0.0)]
 type Time = typing.Annotated[float, annotated_types.Gt(0.0)]
 
 
-class Exception(_contexts.Exception):  # noqa
+class Exception(_base.Exception):  # noqa
     ...
 
 
@@ -188,7 +188,7 @@ class MultiAIMDSemaphore(AIMDSemaphore):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Context[** Params, Return](_contexts.Context, abc.ABC):
+class Context[** Params, Return](_base.Context, abc.ABC):
     keygen: typing.Callable[Params, typing.Hashable]
     lock: dataclasses.Field[Lock]
     max_holds: int
@@ -202,7 +202,7 @@ class Context[** Params, Return](_contexts.Context, abc.ABC):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncContext[** Params, Return](Context[Params, Return], _contexts.AsyncContext[Params, Return]):
+class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContext[Params, Return]):
     lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
     semaphores: dict[typing.Hashable, AsyncAIMDSemaphore] = dataclasses.field(default_factory=dict)
 
@@ -242,7 +242,7 @@ class AsyncContext[** Params, Return](Context[Params, Return], _contexts.AsyncCo
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class MultiContext[** Params, Return](Context[Params, Return], _contexts.MultiContext[Params, Return]):
+class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContext[Params, Return]):
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     semaphores: dict[typing.Hashable, MultiAIMDSemaphore] = dataclasses.field(default_factory=dict)
 
@@ -301,19 +301,19 @@ class Decorator[** Params, Return]:
 
     @typing.overload
     def __call__(
-        self, decoratee: _contexts.AsyncDecoratee[Params, Return], /
-    ) -> _contexts.AsyncDecorated[Params, Return]: ...
+        self, decoratee: _base.AsyncDecoratee[Params, Return], /
+    ) -> _base.AsyncDecorated[Params, Return]: ...
 
     @typing.overload
     def __call__(
-        self, decoratee: _contexts.MultiDecoratee[Params, Return], /
-    ) -> _contexts.MultiDecorated[Params, Return]: ...
+        self, decoratee: _base.MultiDecoratee[Params, Return], /
+    ) -> _base.MultiDecorated[Params, Return]: ...
 
     def __call__(
-        self, decoratee: _contexts.Decoratee[Params, Return]
-    ) -> _contexts.Decorated[Params, Return]:
-        if not isinstance(decoratee, _contexts.Decorated):
-            decoratee = _contexts.Decorator[Params, Return]()(decoratee)
+        self, decoratee: _base.Decoratee[Params, Return]
+    ) -> _base.Decorated[Params, Return]:
+        if not isinstance(decoratee, _base.Decorated):
+            decoratee = _base.Decorator[Params, Return]()(decoratee)
 
         if inspect.iscoroutinefunction(decoratee):
             context = AsyncContext(signature=inspect.signature(decoratee), **dataclasses.asdict(self))
