@@ -8,9 +8,9 @@ import atools
 module = inspect.getmodule(atools.Throttle)
 
 
-# FIXME: Multi tests are missing. This suite heavily relies upon determining whether coroutines are running vs
-#  suspended (via asyncio.eager_task_factory). Ideally, similar functionality exists for threading. Otherwise, we need
-#  to find a way to determine that thread execution has reached a certain point. Ideally without mocking synchronization
+# TODO: Multi tests are missing. This suite heavily relies upon determining whether coroutines are running vs suspended
+#  (via asyncio.eager_task_factory). Ideally, similar functionality exists for threading. Otherwise, we need to find a
+#  way to determine that thread execution has reached a certain point. Ideally without mocking synchronization
 #  primitives.
 
 

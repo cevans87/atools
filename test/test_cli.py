@@ -398,8 +398,8 @@ def test_enum_enforces_choices() -> None:
         return locals()
 
     with pytest.raises(atools.CLI.Exception):
-        entrypoint('d')
-    assert entrypoint('a') == {'foo': FooEnum.a}
+        entrypoint(['d'])
+    assert entrypoint(['a']) == {'foo': FooEnum.a}
 
 
 def test_literal_enforces_choices() -> None:
@@ -409,8 +409,8 @@ def test_literal_enforces_choices() -> None:
         return locals()
 
     with pytest.raises(atools.CLI.Exception):
-        entrypoint('0')
-    assert entrypoint('1') == {'foo': 1}
+        entrypoint(['0'])
+    assert entrypoint(['1']) == {'foo': 1}
 
 
 def test_cli_names_enforce_subcommand_structure() -> None:

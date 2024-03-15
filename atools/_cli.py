@@ -486,6 +486,7 @@ class Decorator[** Params, Return]:
     """
 
     name: _base.Name = ...
+    _: dataclasses.KW_ONLY = ...
 
     AddArgument: typing.ClassVar = _AddArgument
     Annotated: typing.ClassVar = _Annotated
@@ -517,6 +518,7 @@ class Decorator[** Params, Return]:
             cli.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
 
         if inspect.iscoroutinefunction(decoratee):
+            decoratee: _base.AsyncDecorated[Params, Return]
             decorated = inspect.markcoroutinefunction(AsyncDecorated[Params, Return](
                 cli=cli,
                 contexts=decorated.contexts,
@@ -525,6 +527,7 @@ class Decorator[** Params, Return]:
                 register=decorated.register,
             ))
         else:
+            decoratee: _base.MultiDecorated[Params, Return]
             decorated = MultiDecorated[Params, Return](
                 cli=cli,
                 contexts=decorated.contexts,
@@ -532,9 +535,8 @@ class Decorator[** Params, Return]:
                 key=decorated.key,
                 register=decorated.register,
             )
-        decorated = decorated.register.decoratees[decorated.key] = functools.wraps(decoratee)(decorated)
 
-        assert isinstance(decorated, Decorated)
+        decorated = decorated.register.decoratees[decorated.key] = functools.wraps(decoratee, updated=())(decorated)
 
         return decorated
 

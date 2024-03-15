@@ -28,7 +28,7 @@ SyncMemo = object
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class ContextData[** Params](_context.ContextData[Params]):
+class ContextData[** Params](_context.Context[Params]):
     ...
 
 

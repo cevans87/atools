@@ -2,6 +2,7 @@ import abc
 import annotated_types
 import asyncio
 import dataclasses
+import functools
 import heapq
 import inspect
 import sys
@@ -66,7 +67,7 @@ class AIMDSemaphore(abc.ABC):
         self.units = self.max_units
 
     def _acquire_hold(self) -> typing.Generator[typing.Callable[[], typing.Awaitable[None] | None], None, None]:
-        while self.holds >= max(1, self.value):
+        while self.holds >= max(1, min(self.value, self.max_holds)):
             yield from self._wait(self.holds_condition)
         self.holds += 1
 
@@ -99,7 +100,7 @@ class AIMDSemaphore(abc.ABC):
         match ok:
             case True if self.value <= 0:
                 self.value = 1
-            case True if self.holds in range((self.value // 2) + 1, self.max_holds):
+            case True if self.holds > self.value // 2:
                 self.value += 1
                 self.holds_condition.notify(1)
             case False if self.value > 0:
@@ -196,7 +197,6 @@ class Context[** Params, Return](_base.Context, abc.ABC):
     max_units: int
     max_waits: int
     start: int
-    frames: typing.Annotated[int, annotated_types.Gt(0)]
     window: typing.Annotated[float, annotated_types.Ge(0.0)]
     semaphores: dict[typing.Hashable, AIMDSemaphore]
 
@@ -278,7 +278,10 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Decorator[** Params, Return]:
-    frames: typing.Annotated[int, annotated_types.Gt(0)] = 1
+    name: _base.Name = ...
+
+    _: dataclasses.KW_ONLY = ...
+
     # TODO: make a sync and async version of the key return.
     keygen: typing.Callable[Params, typing.Hashable] = lambda *args, **kwargs: None
 
@@ -301,27 +304,55 @@ class Decorator[** Params, Return]:
 
     @typing.overload
     def __call__(
-        self, decoratee: _base.AsyncDecoratee[Params, Return], /
+        self, decoratee: _base.AsyncDecoratee[Params, Return] | _base.AsyncDecorated[Params, Return], /
     ) -> _base.AsyncDecorated[Params, Return]: ...
 
     @typing.overload
     def __call__(
-        self, decoratee: _base.MultiDecoratee[Params, Return], /
+        self, decoratee: _base.AsyncDecoratee[Params, Return] | _base.MultiDecorated[Params, Return], /
     ) -> _base.MultiDecorated[Params, Return]: ...
 
     def __call__(
-        self, decoratee: _base.Decoratee[Params, Return]
+        self, decoratee: _base.Decoratee[Params, Return] | _base.Decorated[Params, Return], /
     ) -> _base.Decorated[Params, Return]:
         if not isinstance(decoratee, _base.Decorated):
-            decoratee = _base.Decorator[Params, Return]()(decoratee)
+            decoratee = _base.Decorator[Params, Return](name=self.name)(decoratee)
 
         if inspect.iscoroutinefunction(decoratee):
-            context = AsyncContext(signature=inspect.signature(decoratee), **dataclasses.asdict(self))
+            decoratee: _base.AsyncDecorated[Params, Return]
+            decorated: _base.AsyncDecorated[Params, Return] = inspect.markcoroutinefunction(dataclasses.replace(
+                decoratee, contexts=tuple([
+                    AsyncContext(
+                        signature=inspect.signature(decoratee),
+                        keygen=self.keygen,
+                        max_holds=self.max_holds,
+                        max_panes=self.max_panes,
+                        max_units=self.max_units,
+                        max_waits=self.max_waits,
+                        start=self.start,
+                        window=self.window,
+                    ),
+                    *decoratee.contexts
+                ])
+            ))
         else:
-            context = MultiContext(signature=inspect.signature(decoratee), **dataclasses.asdict(self))
+            decoratee: _base.MultiDecorated[Params, Return]
+            decorated: _base.MultiDecorated[Params, Return] = dataclasses.replace(
+                decoratee, contexts=tuple([
+                    MultiContext(
+                        signature=inspect.signature(decoratee),
+                        keygen=self.keygen,
+                        max_holds=self.max_holds,
+                        max_panes=self.max_panes,
+                        max_units=self.max_units,
+                        max_waits=self.max_waits,
+                        start=self.start,
+                        window=self.window,
+                    ),
+                    *decoratee.contexts
+                ])
+            )
 
-        decoratee.contexts = tuple([context, *decoratee.contexts])
-
-        decorated = decoratee
+        decorated = decorated.register.decoratees[decorated.key] = functools.wraps(decoratee, updated=())(decorated)
 
         return decorated
