@@ -53,24 +53,6 @@ async def test_async_primitive_arg(arg) -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_size_expires_memos() -> None:
-    call_count = 0
-
-    class Foo:
-
-        @atools.Memoize(size=1)
-        async def foo(self, _) -> None:
-            nonlocal call_count
-            call_count += 1
-
-    foo = Foo()
-    await foo.foo(0)
-    await foo.foo(1)
-    await foo.foo(0)
-    assert call_count == 3
-
-
-@pytest.mark.asyncio
 async def test_method() -> None:
     call_count = 0
 
@@ -116,7 +98,25 @@ async def test_classmethod() -> None:
 
 
 @pytest.mark.asyncio
-async def test_instance_methods_have_separate_memoize_instances() -> None:
+async def test_async_size_expires_memos() -> None:
+    call_count = 0
+
+    class Foo:
+
+        @atools.Memoize(size=1)
+        async def foo(self, _) -> None:
+            nonlocal call_count
+            call_count += 1
+
+    foo = Foo()
+    await foo.foo(0)
+    await foo.foo(1)
+    await foo.foo(0)
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_async_size_on_methods_has_size_per_bound_instance() -> None:
     call_count = 0
 
     class Foo:

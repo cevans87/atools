@@ -521,7 +521,7 @@ class Decorator[** Params, Return]:
             decoratee: _base.AsyncDecorated[Params, Return]
             decorated = inspect.markcoroutinefunction(AsyncDecorated[Params, Return](
                 cli=cli,
-                contexts=decorated.contexts,
+                contexts=decorated.create_contexts,
                 decoratee=decorated.decoratee,
                 key=decorated.key,
                 register=decorated.register,
@@ -530,7 +530,7 @@ class Decorator[** Params, Return]:
             decoratee: _base.MultiDecorated[Params, Return]
             decorated = MultiDecorated[Params, Return](
                 cli=cli,
-                contexts=decorated.contexts,
+                contexts=decorated.create_contexts,
                 decoratee=decorated.decoratee,
                 key=decorated.key,
                 register=decorated.register,

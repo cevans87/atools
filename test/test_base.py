@@ -16,7 +16,7 @@ def test_key() -> None:
     def foo():
         ...
 
-    assert foo.key == (*__name__.split('.'), test_key.__name__, foo.__name__)
+    assert foo.register_key == (*__name__.split('.'), test_key.__name__, foo.__name__)
 
 
 def test_register() -> None:
@@ -24,8 +24,8 @@ def test_register() -> None:
     def foo():
         ...
 
-    assert foo.key in foo.register.decoratees
-    assert foo.key in foo.register.links
+    assert foo.register_key in foo.register.decoratees
+    assert foo.register_key in foo.register.links
 
 
 def test_method() -> None:
