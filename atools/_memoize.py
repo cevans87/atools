@@ -1,15 +1,18 @@
 from __future__ import annotations
+
 import abc
 import annotated_types
 import asyncio
+import collections
+import concurrent.futures
 import dataclasses
-import functools
 import inspect
 import sys
 import time
 import threading
 import types
 import typing
+import weakref
 
 
 from . import _base
@@ -21,81 +24,45 @@ type Keygen[** Params] = typing.Callable[Params, Key]
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Memo(abc.ABC):
-    ...
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Pending(Memo, abc.ABC):
-    event: asyncio.Event | threading.Event
     expire: float | None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncPending(Pending):
-    event: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+class Pending[Return](Memo, abc.ABC):
+    future: asyncio.Future[Return] | concurrent.futures.Future[Return]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class MultiPending(Pending):
-    event: threading.Event = dataclasses.field(default_factory=threading.Event)
+class AsyncPending[Return](Pending[Return]):
+    future: asyncio.Future[Return] = dataclasses.field(default_factory=asyncio.Future)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MultiPending[Return](Pending):
+    future: concurrent.futures.Future[Return] = dataclasses.field(default_factory=concurrent.futures.Future)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Raised(Memo):
     e: BaseException
-    expire: float | None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Returned[Return](Memo, Exception):
-    expire: float | None
     value: Return
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
-    duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None
-    memos: dict[object, dict[typing.Hashable, Memo]] = dataclasses.field(default_factory=dict)
-
-    key: Key
-    memo: Memo
-
-    def __post_init__(self) -> None:
-        if (self.instance, self.args, self.kwargs) != (..., ..., ...):
-            return
-
-        object.__setattr__(self, 'key', self.keygen(*self.args, **self.kwargs))
-        #object.__setattr__(self, 'memo', self.memos.get(self.instance, {}).get(self.key))
+    pending: Pending
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContext[Params, Return]):
     lock: asyncio.Lock = dataclasses.field(default_factory=lambda: asyncio.Lock())
 
-    async def __call__(self) -> _base.ShortCircuit[Return] | None:
-        async with self.lock:
-            while True:
-                match self.memos.setdefault(self.instance, {}).get(self.key):
-                    case Returned(expire=expire, value=value) if expire is None or time.time() < expire:
-                        return _base.ShortCircuit[Return](value=value)
-                    case Raised(e=e, expire=expire) if expire is None or time.time() < expire:
-                        raise e
-                    case Raised() | Returned() | None:
-                        object.__setattr__(self, 'memo', AsyncPending())
-                        self.memos[self.instance][self.key] = self.memo
-                    case AsyncPending(event=event) if self.return_ is ...:
-                        self.lock.release()
-                        await event.wait()
-                        await self.lock.acquire()
-                        continue
-                    case AsyncPending(event=event):
-                        self.memos[self.instance][self.key] = Returned[Return](
-                            expire=None if self.duration is None else time.time() + self.duration,
-                            value=self.return_,
-                        )
-                        event.set()
-
-                return None
+    async def __call__(self, return_: Return) -> None:
+        self.pending.future.set_result(return_)
 
     @typing.overload
     async def __aexit__[ExcType: type[BaseException]](
@@ -105,50 +72,19 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
     @typing.overload
     async def __aexit__(self, exc_type: None, exc_val: None, exc_tb: None) -> None: ...
 
-    async def __aexit__[ExcType: type[BaseException]](
-        self, exc_type: type[ExcType] | None, exc_val: ExcType | None, exc_tb: types.TracebackType | None
-    ) -> None:
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         if (exc_type, exc_val, exc_tb) == (None, None, None):
             return None
 
-        key = self.keygen(*self.args, **self.kwargs)
-        async with self.lock:
-            match self.memo:
-                case AsyncPending(event=event):
-                    self.memos[self.instance][key] = Raised(
-                        e=exc_val, expire=None if self.duration is None else time.time() + self.duration
-                    )
-                    event.set()
+        self.pending.future.set_exception(exc_val)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContext[Params, Return]):
     lock: threading.Lock = dataclasses.field(default_factory=lambda: threading.Lock())
 
-    def __call__(self) -> _base.ShortCircuit[Return] | None:
-        with self.lock:
-            while True:
-                match self.memos.setdefault(self.instance, {}).get(self.key):
-                    case Returned(expire=expire, value=value) if expire is None or time.time() < expire:
-                        return _base.ShortCircuit[Return](value=value)
-                    case Raised(e=e, expire=expire) if expire is None or time.time() < expire:
-                        raise e
-                    case Raised() | Returned() | None:
-                        object.__setattr__(self, 'memo', AsyncPending())
-                        self.memos[self.instance][self.key] = self.memo
-                    case MultiPending(event=event) if self.return_ is ...:
-                        self.lock.release()
-                        event.wait()
-                        self.lock.acquire()
-                        continue
-                    case MultiPending(event=event):
-                        self.memos[self.instance][self.key] = Returned[Return](
-                            expire=None if self.duration is None else time.time() + self.duration,
-                            value=self.return_,
-                        )
-                        event.set()
-
-                return None
+    def __call__(self, return_: Return) -> None:
+        self.pending.future.set_result(return_)
 
     @typing.overload
     def __exit__[ExcType: type[BaseException]](
@@ -158,136 +94,117 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
     @typing.overload
     def __exit__(self, exc_type: None, exc_val: None, exc_tb: None) -> None: ...
 
-    def __exit__[ExcType: type[BaseException]](
-        self, exc_type: type[ExcType] | None, exc_val: ExcType | None, exc_tb: types.TracebackType | None
-    ) -> None:
+    def __exit__(self, exc_type, exc_val, exc_tb):
         if (exc_type, exc_val, exc_tb) == (None, None, None):
             return None
 
-        key = self.keygen(*self.args, **self.kwargs)
-        with self.lock:
-            match self.memos.get(self.instance).get(key):
-                case MultiPending(event=event):
-                    self.memos[self.instance][key] = Raised(
-                        e=exc_val, expire=None if self.duration is None else time.time() + self.duration
-                    )
-                    event.set()
+        self.pending.future.set_exception(exc_val)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.ABC):
     duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None
     keygen: Keygen[Params]
-    memos: dict[typing.Hashable, Memo] = dataclasses.field(default_factory=dict)
+    memos: collections.OrderedDict[typing.Hashable, Memo] = dataclasses.field(
+        default_factory=collections.OrderedDict
+    )
+    memoss: weakref.WeakKeyDictionary[_base.Instance, dict[typing.Hashable, Memo]] = dataclasses.field(
+        default_factory=weakref.WeakKeyDictionary
+    )
     size: int
 
-    @typing.overload
-    @property
-    def context_t(
-        self: AsyncCreateContext[Params, Return]
-    ) -> type[AsyncContext[Params, Return]]: ...
+    BoundCreateContext: typing.ClassVar[type[BoundCreateContext]]
+    Context: typing.ClassVar[type[Context]] = Context
+    Pending: typing.ClassVar[type[Pending]] = Pending
 
-    @typing.overload
-    @property
-    def context_t(
-        self: MultiCreateContext[Params, Return]
-    ) -> type[MultiContext[Params, Return]]: ...
+    def __call__(
+        self: AsyncCreateContext[Params, Return] | MultiCreateContext[Params, Return],
+        args: Params.args,
+        kwargs: Params.kwargs,
+    ) -> (
+        AsyncContext[Params, Return]
+        | MultiContext[Params, Return]
+        | _base.HerdFollower[Return]
+        | _base.ShortCircuit[Return]
+    ):
+        key = self.keygen(*args, **kwargs)
+        match self.memos.get(key):
+            case Returned(expire=expire, value=value) if expire is None or time.time() < expire:
+                self.memos.move_to_end(key)
+                return _base.ShortCircuit[Return](value=value)
+            case Raised(e=e, expire=expire) if expire is None or time.time() < expire:
+                self.memos.move_to_end(key)
+                raise e
+            case Pending(expire=expire, future=future) if expire is None or time.time() < expire:
+                self.memos.move_to_end(key)
+                if not future.done():
+                    return _base.HerdFollower(future=future)
+                else:
+                    try:
+                        self.memos[key] = Returned(expire=expire, value=(value := future.result()))
+                        return _base.ShortCircuit[Return](value=value)
+                    except Exception as e:
+                        self.memos[key] = Raised(expire=expire, e=e)
+                        raise
+            case None | Pending() | Raised() | Returned():
+                pending = self.memos[key] = self.Pending(
+                    expire=None if self.duration is None else time.time() + self.duration
+                )
+                self.memos.move_to_end(key)
+                if self.size is not None and self.size < len(self.memos):
+                    self.memos.popitem(last=False)
+                return self.Context(
+                    args=args,
+                    kwargs=kwargs,
+                    pending=pending,
+                    signature=self.signature,
+                )
 
-    @property
-    def context_t(self) -> type[MultiContext[Params, Return]]: ...  # noqa
-
-    del context_t
+    def __get__(self, instance: _base.Instance, owner) -> BoundCreateContext[Params, Return]:
+        # FIXME: modifying momoss should require a lock.
+        return self.BoundCreateContext[Params, Return](
+            duration=self.duration,
+            instance=instance,
+            keygen=self.keygen,
+            memos=self.memoss.setdefault(instance, collections.OrderedDict()),
+            memoss=self.memoss,
+            signature=self.signature,
+            size=self.size,
+        )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base.AsyncCreateContext[Params, Return]):
     lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
 
+    BoundCreateContext: typing.ClassVar[type[AsyncBoundCreateContext]]
+    Context: typing.ClassVar[type[AsyncContext]] = AsyncContext
+    Pending: typing.ClassVar[type[AsyncPending]] = AsyncPending
+
     async def __call__(
         self,
         args: Params.args,
         kwargs: Params.kwargs,
-    ) -> Context[Params, Return] | _base.ShortCircuit[Return]:
-
-        key = self.keygen(*args, **kwargs)
+    ) -> AsyncContext[Params, Return] | _base.Pending[Return] | _base.ShortCircuit[Return]:
         async with self.lock:
-            while True:
-                match self.memos.get(key):
-                    case Returned(expire=expire, value=value) if expire is None or time.time() < expire:
-                        return _base.ShortCircuit[Return](value=value)
-                    case Raised(e=e, expire=expire) if expire is None or time.time() < expire:
-                        raise e
-                    case AsyncPending(event=event, expire=expire) if expire is None or time.time() < expire:
-                        self.lock.release()
-                        await event.wait()
-                        await self.lock.acquire()
-                        continue
-
-                    case Raised() | Returned() | AsyncPending() | None:
-                        memo = self.memos[key] = AsyncPending(expire=time.time() + self.duration)
-                        return AsyncContext(
-                            args=args,
-                            duration=self.duration,
-                            key=key,
-                            kwargs=kwargs,
-                            memo=memo,
-                            signature=self.signature,
-                        )
-
-                return None
-
-    @typing.overload
-    async def __aexit__[ExcType: type[BaseException]](
-        self, exc_type: type[ExcType], exc_val: ExcType, exc_tb: types.TracebackType
-    ) -> object: ...
-
-    @typing.overload
-    async def __aexit__(self, exc_type: None, exc_val: None, exc_tb: None) -> None: ...
-
-    async def __aexit__[ExcType: type[BaseException]](
-        self, exc_type: type[ExcType] | None, exc_val: ExcType | None, exc_tb: types.TracebackType | None
-    ) -> None:
-        if (exc_type, exc_val, exc_tb) == (None, None, None):
-            return None
-
-        key = self.keygen(*self.args, **self.kwargs)
-        async with self.lock:
-            match self.memo:
-                case AsyncPending(event=event):
-                    self.memos[self.instance][key] = Raised(
-                        e=exc_val, expire=None if self.duration is None else time.time() + self.duration
-                    )
-                    event.set()
+            return super().__call__(args, kwargs)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base.MultiCreateContext[Params, Return]):
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
-    def __call__(self) -> _base.ShortCircuit[Return] | None:
-        with self.lock:
-            while True:
-                match self.memos.setdefault(self.instance, {}).get(self.key):
-                    case Returned(expire=expire, value=value) if expire is None or time.time() < expire:
-                        return _base.ShortCircuit[Return](value=value)
-                    case Raised(e=e, expire=expire) if expire is None or time.time() < expire:
-                        raise e
-                    case Raised() | Returned() | None:
-                        object.__setattr__(self, 'memo', AsyncPending())
-                        self.memos[self.instance][self.key] = self.memo
-                    case MultiPending(event=event) if self.return_ is ...:
-                        self.lock.release()
-                        event.wait()
-                        self.lock.acquire()
-                        continue
-                    case MultiPending(event=event):
-                        self.memos[self.instance][self.key] = Returned[Return](
-                            expire=None if self.duration is None else time.time() + self.duration,
-                            value=self.return_,
-                        )
-                        event.set()
+    BoundCreateContext: typing.ClassVar[type[MultiBoundCreateContext]]
+    Context: typing.ClassVar[type[MultiContext]] = MultiContext
+    Pending: typing.ClassVar[type[MultiPending]] = MultiPending
 
-                return None
+    def __call__(
+        self,
+        args: Params.args,
+        kwargs: Params.kwargs,
+    ) -> MultiContext[Params, Return] | _base.ShortCircuit[Return]:
+        with self.lock:
+            return super().__call__(args, kwargs)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -297,18 +214,33 @@ class BoundCreateContext[** Params, Return](
     ...
 
 
+CreateContext.BoundCreateContext = BoundCreateContext
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncBoundCreateContext[** Params, Return](
-    BoundCreateContext[Params, Return], _base.AsyncBoundCreateContext[Params, Return], abc.ABC
+    BoundCreateContext[Params, Return],
+    AsyncCreateContext[Params, Return],
+    _base.AsyncBoundCreateContext[Params, Return],
+    abc.ABC,
 ):
     ...
+
+
+AsyncCreateContext.BoundCreateContext = AsyncBoundCreateContext
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiBoundCreateContext[** Params, Return](
-    BoundCreateContext[Params, Return], _base.MultiBoundCreateContext[Params, Return], abc.ABC
+    BoundCreateContext[Params, Return],
+    MultiCreateContext[Params, Return],
+    _base.MultiBoundCreateContext[Params, Return],
+    abc.ABC
 ):
     ...
+
+
+MultiCreateContext.BoundCreateContext = MultiBoundCreateContext
 
 
 @dataclasses.dataclass(frozen=True)
@@ -320,22 +252,20 @@ class Decorator[** Params, Return]:
     size: int = sys.maxsize
 
     @typing.overload
-    def __call__[** Params, Return](
+    def __call__(
         self, decoratee: _base.AsyncDecoratee[Params, Return], /
     ) -> _base.AsyncDecorated[Params, Return]: ...
 
     @typing.overload
-    def __call__[** Params, Return](
+    def __call__(
         self, decoratee: _base.MultiDecoratee[Params, Return], /
     ) -> _base.MultiDecorated[Params, Return]: ...
 
-    def __call__[** Params, Return](
-        self, decoratee: _base.Decoratee[Params, Return], /
-    ) -> _base.Decorated[Params, Return]:
+    def __call__(self, decoratee, /):
         if not isinstance(decoratee, _base.Decorated):
             decoratee = _base.Decorator[Params, Return](name=self.name)(decoratee)
 
-        signature = inspect.signature(decoratee)
+        signature = inspect.signature(decoratee.decoratee)
         if (keygen := self.keygen) is ...:
             def keygen(*args, **kwargs) -> typing.Hashable:
                 bind = signature.bind(*args, **kwargs)
@@ -346,36 +276,36 @@ class Decorator[** Params, Return]:
         if inspect.iscoroutinefunction(decoratee):
             decoratee: _base.AsyncDecorated[Params, Return]
             decorated: _base.AsyncDecorated[Params, Return] = _base.AsyncDecorated[Params, Return](
-                contexts=tuple([
+                create_contexts=tuple([
                     AsyncCreateContext(
                         duration=self.duration,
                         keygen=keygen,
-                        signature=inspect.signature(decoratee),
+                        signature=signature,
                         size=self.size,
                     ),
+                    *decoratee.create_contexts,
                 ]),
                 decoratee=decoratee.decoratee,
                 register=decoratee.register,
                 register_key=decoratee.register_key,
-                signature=signature,
                 __name__=decoratee.__name__,
                 __qualname__=decoratee.__qualname__,
             )
         else:
             decoratee: _base.MultiDecorated[Params, Return]
             decorated: _base.MultiDecorated[Params, Return] = _base.MultiDecorated[Params, Return](
-                contexts=tuple([
+                create_contexts=tuple([
                     MultiCreateContext(
                         duration=self.duration,
                         keygen=keygen,
-                        signature=inspect.signature(decoratee),
+                        signature=signature,
                         size=self.size,
                     ),
+                    *decoratee.create_contexts,
                 ]),
                 decoratee=decoratee.decoratee,
                 register=decoratee.register,
                 register_key=decoratee.register_key,
-                signature=signature,
                 __name__=decoratee.__name__,
                 __qualname__=decoratee.__qualname__,
             )

@@ -1,6 +1,6 @@
 import asyncio
 
-import pytest
+import pytest  # noqa
 
 import atools
 
@@ -116,7 +116,7 @@ async def test_async_size_expires_memos() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_size_on_methods_has_size_per_bound_instance() -> None:
+async def test_async_size_method_is_per_instance() -> None:
     call_count = 0
 
     class Foo:
@@ -126,16 +126,137 @@ async def test_async_size_on_methods_has_size_per_bound_instance() -> None:
             nonlocal call_count
             call_count += 1
 
-    foo0, foo1 = Foo(), Foo()
-    await foo0.foo(0)
-    assert call_count == 1
-    await foo1.foo(0)
-    assert call_count == 2
-    await foo0.foo(1)
+    class Bar(Foo):
+        ...
+
+    class Baz(Foo):
+        ...
+
+    await asyncio.gather((foo := Foo()).foo(0), (bar := Bar()).foo(0), (baz := Baz()).foo(0))
     assert call_count == 3
-    await foo1.foo(1)
-    assert call_count == 4
-    await foo0.foo(0)
-    assert call_count == 5
-    await foo1.foo(0)
+    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+    assert call_count == 3
+    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
     assert call_count == 6
+    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
+    assert call_count == 6
+    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+    assert call_count == 9
+    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+    assert call_count == 9
+    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
+    assert call_count == 12
+    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
+    assert call_count == 15
+
+
+@pytest.mark.asyncio
+async def test_async_size_classmethod_is_per_class() -> None:
+    call_count = 0
+
+    class Foo:
+
+        @classmethod
+        @atools.Memoize(size=1)
+        async def foo(cls, _) -> None:
+            nonlocal call_count
+            call_count += 1
+
+    class Bar(Foo):
+        ...
+
+    class Baz(Foo):
+        ...
+
+    await asyncio.gather((foo := Foo()).foo(0), (bar := Bar()).foo(0), (baz := Baz()).foo(0))
+    assert call_count == 3
+    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+    assert call_count == 3
+    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
+    assert call_count == 6
+    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
+    assert call_count == 6
+    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+    assert call_count == 9
+    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+    assert call_count == 9
+    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
+    assert call_count == 9
+    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
+    assert call_count == 9
+
+
+@pytest.mark.asyncio
+async def test_async_size_staticmethod_is_per_declaration() -> None:
+    call_count = 0
+
+    class Foo:
+
+        @staticmethod
+        @atools.Memoize(size=1)
+        async def foo(_) -> None:
+            nonlocal call_count
+            call_count += 1
+
+    class Bar(Foo):
+        ...
+
+    class Baz(Foo):
+        ...
+
+    await asyncio.gather((foo := Foo()).foo(0), (bar := Bar()).foo(0), (baz := Baz()).foo(0))
+    assert call_count == 1
+    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+    assert call_count == 1
+    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
+    assert call_count == 2
+    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
+    assert call_count == 2
+    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+    assert call_count == 3
+    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+    assert call_count == 3
+    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
+    assert call_count == 3
+    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_herds_only_call_once() -> None:
+    call_count = 0
+    event = asyncio.Event()
+
+    @atools.Memoize()
+    async def foo() -> None:
+        nonlocal call_count
+        await event.wait()
+        call_count += 1
+
+    futures = [asyncio.get_event_loop().create_task(foo()) for _ in range(10)]
+    event.set()
+    await asyncio.gather(*futures)
+
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_exceptions_are_saved() -> None:
+    call_count = 0
+
+    class FooException(Exception):
+        ...
+
+    @atools.Memoize()
+    async def foo() -> None:
+        nonlocal call_count
+        call_count += 1
+        raise FooException()
+
+    with pytest.raises(FooException):
+        await foo()
+
+    with pytest.raises(FooException):
+        await foo()
+
+    assert call_count == 1
