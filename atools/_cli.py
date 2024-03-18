@@ -41,6 +41,7 @@ Multiple-entrypoint example:
 
 """
 from __future__ import annotations
+
 import abc
 import annotated_types
 import argparse
@@ -49,7 +50,6 @@ import asyncio
 import builtins
 import dataclasses
 import enum
-import functools
 import inspect
 import itertools
 import logging
@@ -338,11 +338,11 @@ class CLI[** Params, Return](argparse.ArgumentParser):
     ...
 
 
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class Decorated[** Params, Return](_base.Decorated[Params, Return], abc.ABC):
     cli: CLI[Params, Return]
 
-    def __call__(self, args: list[str]) -> Return:
+    def __call__(self, args: list[str]) -> Return:  # noqa
         """Parses args, runs parser's registered entrypoint with parsed args, and return the result.
 
         Note that the entrypoint that is run is determined by `self.name` and given `args`.
@@ -434,12 +434,12 @@ class Decorated[** Params, Return](_base.Decorated[Params, Return], abc.ABC):
         return return_
 
 
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncDecorated[** Params, Return](Decorated[Params, Return], _base.AsyncDecorated[Params, Return]):
     ...
 
 
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiDecorated[** Params, Return](Decorated[Params, Return], _base.MultiDecorated[Params, Return]):
     ...
 
@@ -494,14 +494,14 @@ class Decorator[** Params, Return]:
 
     def __call__(self, decoratee: _base.Decoratee[Params, Return], /) -> Decorated[Params, Return]:
         if isinstance(decoratee, _base.Decorated):
-            decorated: _base.Decorated[Params, Return] = decoratee
+            decoratee: _base.Decorated[Params, Return] = decoratee
         else:
-            decorated = _base.Decorator[Params, Return](name=self.name)(decoratee)
+            decoratee = _base.Decorator[Params, Return](name=self.name)(decoratee)
 
-        signature = inspect.signature(decoratee)
+        signature = inspect.signature(decoratee.decoratee)
         cli = CLI(
             description='\n'.join(filter(None, [
-                decoratee.__doc__,
+                decoratee.decoratee.__doc__,
                 f'return type: {pprint.pformat(signature.return_annotation, compact=True, width=75)}'
             ])),
             formatter_class=argparse.RawTextHelpFormatter
@@ -517,26 +517,26 @@ class Decorator[** Params, Return]:
             ))
             cli.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
 
-        if inspect.iscoroutinefunction(decoratee):
+        if inspect.iscoroutinefunction(decoratee.decoratee):
             decoratee: _base.AsyncDecorated[Params, Return]
-            decorated = inspect.markcoroutinefunction(AsyncDecorated[Params, Return](
+            decorated = AsyncDecorated[Params, Return](
                 cli=cli,
-                contexts=decorated.create_contexts,
-                decoratee=decorated.decoratee,
-                key=decorated.key,
-                register=decorated.register,
-            ))
+                create_contexts=decoratee.create_contexts,
+                decoratee=decoratee.decoratee,
+                register=decoratee.register,
+                register_key=decoratee.register_key,
+            )
         else:
             decoratee: _base.MultiDecorated[Params, Return]
             decorated = MultiDecorated[Params, Return](
                 cli=cli,
-                contexts=decorated.create_contexts,
-                decoratee=decorated.decoratee,
-                key=decorated.key,
-                register=decorated.register,
+                create_contexts=decoratee.create_contexts,
+                decoratee=decoratee.decoratee,
+                register=decoratee.register,
+                register_key=decoratee.register_key,
             )
 
-        decorated = decorated.register.decoratees[decorated.key] = functools.wraps(decoratee, updated=())(decorated)
+        decorated.register.decoratees[decorated.register_key] = decorated
 
         return decorated
 
@@ -548,7 +548,7 @@ class Decorator[** Params, Return]:
     def decorated(self) -> Decorated:
         decorator = _base.Decorator[Params, Return](name=self.name)
         register = decorator.register
-        key = decorator.key
+        key = decorator.register_key
 
         if not isinstance((decorated := register.decoratees.get(key)), Decorated):
             def decorated(subcommand: typing.Literal[*sorted(register.links.get(key, set()))]) -> None:  # noqa
@@ -566,9 +566,9 @@ class Decorator[** Params, Return]:
     def run(self, args: typing.Sequence[str] = ...) -> object:
         args = sys.argv[1:] if args is ... else args
         register = _base.Decorator[Params, Return](name=self.name).register
-        key = _base.Decorator(name=self.name).key
+        key = _base.Decorator(name=self.name).register_key
 
-        while args and (_base.Key([*key, args[0]]) in register.links):
-            key = _base.Key([*key, args.pop(0)])
+        while args and (_base.Register.Key([*key, args[0]]) in register.links):
+            key = _base.Register.Key([*key, args.pop(0)])
 
         return Decorator(str(key)).decorated(args)

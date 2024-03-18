@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 import unittest.mock
-import pytest
+import pytest  # noqa
 
 import atools
 

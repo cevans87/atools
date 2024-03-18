@@ -1,8 +1,9 @@
+from __future__ import annotations
+
 import abc
 import annotated_types
 import asyncio
 import dataclasses
-import functools
 import heapq
 import inspect
 import sys
@@ -10,6 +11,7 @@ import threading
 import time
 import types
 import typing
+import weakref
 
 from . import _base
 
@@ -60,8 +62,8 @@ class AIMDSemaphore(abc.ABC):
 
     units_pending = False
 
-    holds_condition: asyncio.Condition | threading.Condition
-    units_condition: asyncio.Condition | threading.Condition
+    holds_condition: asyncio.Condition | threading.Condition = ...
+    panes_condition: asyncio.Condition | threading.Condition = ...
 
     def __post_init__(self) -> None:
         self.units = self.max_units
@@ -74,10 +76,10 @@ class AIMDSemaphore(abc.ABC):
         if self.value <= 0:
             yield lambda: self._sleep(self.holds_condition, 2.0 ** -self.value)
 
-    def _acquire_unit(self) -> typing.Generator[typing.Callable[[], typing.Awaitable[None] | None], None, None]:
+    def _acquire_pane(self) -> typing.Generator[typing.Callable[[], typing.Awaitable[None] | None], None, None]:
         while self.units >= self.max_units:
             if self.units_pending:
-                yield from self._wait(self.units_condition)
+                yield from self._wait(self.panes_condition)
             elif not self.panes:
                 self.units = 0
                 heapq.heappush(self.panes, time.time() + self.window)
@@ -89,11 +91,11 @@ class AIMDSemaphore(abc.ABC):
                 heapq.heappush(self.panes, now + self.window)
             else:
                 self.units_pending = True
-                yield lambda: self._sleep(self.units_condition, self.panes[0] - now)
+                yield lambda: self._sleep(self.panes_condition, self.panes[0] - now)
                 self.units_pending = False
                 self.units = 0
                 heapq.heappushpop(self.panes, self.panes[0] + self.window)
-                self.units_condition.notify(self.max_units + 1)
+                self.panes_condition.notify(self.max_units + 1)
         self.units += 1
 
     def _release(self, ok: bool) -> None:
@@ -141,7 +143,7 @@ class AIMDSemaphore(abc.ABC):
 @dataclasses.dataclass(kw_only=True)
 class AsyncAIMDSemaphore(AIMDSemaphore):
     holds_condition: asyncio.Condition = dataclasses.field(default_factory=lambda: asyncio.Condition())
-    units_condition: asyncio.Condition = dataclasses.field(default_factory=lambda: asyncio.Condition())
+    panes_condition: asyncio.Condition = dataclasses.field(default_factory=lambda: asyncio.Condition())
 
     async def _sleep(self, condition: asyncio.Condition, delay: float) -> None:
         condition.release()
@@ -154,8 +156,8 @@ class AsyncAIMDSemaphore(AIMDSemaphore):
         async with self.holds_condition:
             for call in self._acquire_hold():
                 await call()
-        async with self.units_condition:
-            for call in self._acquire_unit():
+        async with self.panes_condition:
+            for call in self._acquire_pane():
                 await call()
 
     async def release(self, ok: bool) -> None:
@@ -166,7 +168,7 @@ class AsyncAIMDSemaphore(AIMDSemaphore):
 @dataclasses.dataclass(kw_only=True)
 class MultiAIMDSemaphore(AIMDSemaphore):
     holds_condition: threading.Condition = dataclasses.field(default_factory=lambda: threading.Condition())
-    units_condition: threading.Condition = dataclasses.field(default_factory=lambda: threading.Condition())
+    panes_condition: threading.Condition = dataclasses.field(default_factory=lambda: threading.Condition())
 
     def _sleep(self, condition: threading.Condition, delay: float) -> None:
         condition.release()
@@ -179,8 +181,8 @@ class MultiAIMDSemaphore(AIMDSemaphore):
         with self.holds_condition:
             for call in self._acquire_hold():
                 call()
-        with self.units_condition:
-            for call in self._acquire_unit():
+        with self.panes_condition:
+            for call in self._acquire_pane():
                 call()
 
     def release(self, ok: bool) -> None:
@@ -190,34 +192,15 @@ class MultiAIMDSemaphore(AIMDSemaphore):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Context[** Params, Return](_base.Context, abc.ABC):
-    keygen: typing.Callable[Params, typing.Hashable]
-    lock: dataclasses.Field[Lock]
-    max_holds: int
-    max_panes: int
-    max_units: int
-    max_waits: int
-    start: int
-    window: typing.Annotated[float, annotated_types.Ge(0.0)]
-    semaphores: dict[typing.Hashable, AIMDSemaphore]
+    semaphore: AsyncAIMDSemaphore | MultiAIMDSemaphore
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContext[Params, Return]):
-    lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
-    semaphores: dict[typing.Hashable, AsyncAIMDSemaphore] = dataclasses.field(default_factory=dict)
+    semaphore: AsyncAIMDSemaphore
 
     async def __aenter__(self):
-        await self.semaphores.setdefault(
-            self.keygen(*self.args, **self.kwargs),
-            AsyncAIMDSemaphore(
-                max_holds=self.max_holds,
-                max_panes=self.max_panes,
-                max_units=self.max_units,
-                max_waits=self.max_waits,
-                value=self.start,
-                window=self.window,
-            )
-        ).acquire()
+        await self.semaphore.acquire()
         return self
 
     @typing.overload
@@ -232,32 +215,19 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
         exc_val: object | None,
         exc_tb: types.TracebackType | None,
     ) -> None:
-        async with self.lock:
-            semaphore = self.semaphores[self.keygen(*self.args, **self.kwargs)]
         match exc_type, exc_val, exc_tb:
             case None, None, None:
-                await semaphore.release(ok=True)
+                await self.semaphore.release(ok=True)
             case _:
-                await semaphore.release(ok=False)
+                await self.semaphore.release(ok=False)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContext[Params, Return]):
-    lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
-    semaphores: dict[typing.Hashable, MultiAIMDSemaphore] = dataclasses.field(default_factory=dict)
+    semaphore: MultiAIMDSemaphore
 
     def __enter__(self):
-        self.semaphores.setdefault(
-            self.keygen(*self.args, **self.kwargs),
-            MultiAIMDSemaphore(
-                max_holds=self.max_holds,
-                max_panes=self.max_panes,
-                max_units=self.max_units,
-                max_waits=self.max_waits,
-                value=self.start,
-                window=self.window,
-            )
-        ).acquire()
+        self.semaphore.acquire()
         return self
 
     @typing.overload
@@ -267,13 +237,114 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
     def __exit__(self, exc_type: type[BaseException], exc_val: object, exc_tb: types.TracebackType) -> None: ...
 
     def __exit__(self, exc_type: type[BaseException], exc_val: object, exc_tb: types.TracebackType) -> None:
-        with self.lock:
-            semaphore = self.semaphores[self.keygen(*self.args, **self.kwargs)]
         match exc_type, exc_val, exc_tb:
             case None, None, None:
-                semaphore.release(ok=True)
+                self.semaphore.release(ok=True)
             case _:
-                semaphore.release(ok=False)
+                self.semaphore.release(ok=False)
+
+
+type Context2[Params, Return] = AsyncContext[Params, Return] | MultiContext[Params, Return]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class CreateContext[** Params, Return](_base.CreateContext, abc.ABC):
+    start: int
+    semaphore: AsyncAIMDSemaphore | MultiAIMDSemaphore
+    semaphores: weakref.WeakKeyDictionary[_base.Instance, AIMDSemaphore] = dataclasses.field(
+        default_factory=weakref.WeakKeyDictionary
+    )
+
+    AIMDSemaphore: typing.ClassVar[type[AIMDSemaphore]] = AIMDSemaphore
+    BoundCreateContext: typing.ClassVar[type[BoundCreateContext]]
+    Context: typing.ClassVar[type[Context]] = Context
+
+    @typing.overload
+    def __call__(
+        self: AsyncCreateContext[Params, Return],
+        args: Params.args,
+        kwargs: Params.kwargs,
+    ) -> AsyncContext[Params, Return]: ...
+
+    @typing.overload
+    def __call__(
+        self: MultiCreateContext[Params, Return],
+        args: Params.args,
+        kwargs: Params.kwargs,
+    ) -> MultiContext[Params, Return]: ...
+
+    def __call__(self, args, kwargs):
+        return self.Context[Params, Return](semaphore=self.semaphore)
+
+    def __get__(self, instance: _base.Instance, owner) -> BoundCreateContext[Params, Return]:
+        return self.BoundCreateContext[Params, Return](
+            semaphore=self.semaphores.setdefault(
+                instance, self.AIMDSemaphore(
+                    max_holds=self.semaphore.max_holds,
+                    max_panes=self.semaphore.max_panes,
+                    max_units=self.semaphore.max_units,
+                    max_waits=self.semaphore.max_waits,
+                    value=self.start,
+                    window=self.semaphore.window,
+                )
+            )
+        )
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base.AsyncCreateContext[Params, Return]):
+    Context: typing.ClassVar[type[Context]] = AsyncContext
+
+    semaphore: AsyncAIMDSemaphore
+    semaphores: weakref.WeakKeyDictionary[_base.Instance, AsyncAIMDSemaphore] = dataclasses.field(
+        default_factory=weakref.WeakKeyDictionary
+    )
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base.MultiCreateContext[Params, Return]):
+    Context: typing.ClassVar[type[Context]] = MultiContext
+
+    semaphore: MultiAIMDSemaphore
+    semaphores: weakref.WeakKeyDictionary[_base.Instance, MultiAIMDSemaphore] = dataclasses.field(
+        default_factory=weakref.WeakKeyDictionary
+    )
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class BoundCreateContext[** Params, Return](
+    CreateContext[Params, Return],
+    _base.BoundCreateContext[Params, Return],
+    abc.ABC
+):
+    ...
+
+
+CreateContext.BoundCreateContext = BoundCreateContext
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class AsyncBoundCreateContext[** Params, Return](
+    BoundCreateContext[Params, Return],
+    _base.AsyncBoundCreateContext[Params, Return],
+    abc.ABC
+):
+    ...
+
+
+AsyncCreateContext.BoundCreateContext = AsyncBoundCreateContext
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MultiBoundCreateContext[** Params, Return](
+    BoundCreateContext[Params, Return],
+    _base.MultiBoundCreateContext[Params, Return],
+    abc.ABC
+):
+    ...
+
+
+MultiCreateContext.BoundCreateContext = MultiBoundCreateContext
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -318,41 +389,53 @@ class Decorator[** Params, Return]:
         if not isinstance(decoratee, _base.Decorated):
             decoratee = _base.Decorator[Params, Return](name=self.name)(decoratee)
 
-        if inspect.iscoroutinefunction(decoratee):
+        if inspect.iscoroutinefunction(decoratee.decoratee):
             decoratee: _base.AsyncDecorated[Params, Return]
-            decorated: _base.AsyncDecorated[Params, Return] = inspect.markcoroutinefunction(dataclasses.replace(
-                decoratee, contexts=tuple([
-                    AsyncContext(
-                        signature=inspect.signature(decoratee),
-                        keygen=self.keygen,
-                        max_holds=self.max_holds,
-                        max_panes=self.max_panes,
-                        max_units=self.max_units,
-                        max_waits=self.max_waits,
+            decorated: _base.AsyncDecorated[Params, Return] = _base.AsyncDecorated[Params, Return](
+                create_contexts=tuple([
+                    AsyncCreateContext(
+                        semaphore=AsyncAIMDSemaphore(
+                            max_holds=self.max_holds,
+                            max_panes=self.max_panes,
+                            max_units=self.max_units,
+                            max_waits=self.max_waits,
+                            value=self.start,
+                            window=self.window,
+                        ),
                         start=self.start,
-                        window=self.window,
                     ),
-                    *decoratee.contexts
-                ])
-            ))
+                    *decoratee.create_contexts
+                ]),
+                decoratee=decoratee.decoratee,
+                register=decoratee.register,
+                register_key=decoratee.register_key,
+                __name__=decoratee.__name__,
+                __qualname__=decoratee.__qualname__,
+            )
         else:
             decoratee: _base.MultiDecorated[Params, Return]
-            decorated: _base.MultiDecorated[Params, Return] = dataclasses.replace(
-                decoratee, contexts=tuple([
-                    MultiContext(
-                        signature=inspect.signature(decoratee),
-                        keygen=self.keygen,
-                        max_holds=self.max_holds,
-                        max_panes=self.max_panes,
-                        max_units=self.max_units,
-                        max_waits=self.max_waits,
+            decorated: _base.MultiDecorated[Params, Return] = _base.MultiDecorated[Params, Return](
+                create_contexts=tuple([
+                    MultiCreateContext(
+                        semaphore=MultiAIMDSemaphore(
+                            max_holds=self.max_holds,
+                            max_panes=self.max_panes,
+                            max_units=self.max_units,
+                            max_waits=self.max_waits,
+                            value=self.start,
+                            window=self.window,
+                        ),
                         start=self.start,
-                        window=self.window,
                     ),
-                    *decoratee.contexts
-                ])
+                    *decoratee.create_contexts,
+                ]),
+                decoratee=decoratee.decoratee,
+                register=decoratee.register,
+                register_key=decoratee.register_key,
+                __name__=decoratee.__name__,
+                __qualname__=decoratee.__qualname__,
             )
 
-        decorated = decorated.register.decoratees[decorated.key] = functools.wraps(decoratee, updated=())(decorated)
+        decorated.register.decoratees[decorated.register_key] = decorated
 
         return decorated

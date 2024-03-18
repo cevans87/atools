@@ -1,8 +1,12 @@
 import asyncio
+import inspect
+import unittest.mock
 
 import pytest  # noqa
 
 import atools
+
+module = inspect.getmodule(atools.Throttle)
 
 # TODO: Multi tests are missing. This suite heavily relies upon determining whether coroutines are running vs suspended
 #  (via asyncio.eager_task_factory). Ideally, similar functionality exists for threading. Otherwise, we need to find a
@@ -21,6 +25,24 @@ def event_loop() -> asyncio.AbstractEventLoop:
     eager_loop.set_task_factory(asyncio.eager_task_factory)
     yield eager_loop
     eager_loop.close()
+
+
+@pytest.fixture
+def m_asyncio() -> unittest.mock.MagicMock:
+    with unittest.mock.patch.object(module.asyncio, 'sleep', autospec=True):
+        yield module.asyncio
+
+
+@pytest.fixture
+def m_threading() -> unittest.mock.MagicMock:
+    with unittest.mock.patch.object(module, 'threading', autospec=True, wraps=module.threading) as m_threading:
+        yield m_threading
+
+
+@pytest.fixture
+def m_time() -> unittest.mock.MagicMock:
+    with unittest.mock.patch.object(inspect.getmodule(atools.Throttle), 'time', autospec=True) as m_time:
+        yield m_time
 
 
 @pytest.mark.asyncio
@@ -252,6 +274,9 @@ async def test_exceptions_are_saved() -> None:
         nonlocal call_count
         call_count += 1
         raise FooException()
+
+    with pytest.raises(FooException):
+        await foo()
 
     with pytest.raises(FooException):
         await foo()
