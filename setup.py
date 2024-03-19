@@ -13,7 +13,7 @@ setup(
     description='Python 3.9+ async/sync memoize and rate decorators',
     extras_require={
         'base': (base := ['pydantic']),
-        'sql_cache': (sql_cache := base + ['sqlalchemy', 'sqlmodel']),
+        'sql_cache': (sql_cache := base + ['sqlalchemy']),
         'requirements': (requirements := base + sql_cache),
         'test': (test := requirements + ['pytest', 'pytest-asyncio', 'pytest-cov']),
     },

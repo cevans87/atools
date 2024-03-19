@@ -17,6 +17,7 @@ import weakref
 
 import pydantic
 import sqlalchemy
+import sqlalchemy.ext.asyncio
 import sqlmodel
 
 from . import _base
@@ -30,7 +31,7 @@ type Keygen[** Params] = typing.Callable[Params, Key]
 type Bytes = bytes
 
 
-class Row(sqlmodel.SQLModel):
+class Row(sqlalchemy.orm.DeclarativeBase):
     key: Key = sqlmodel.Field(primary_key=True)
     bytes_: Bytes
 
@@ -50,8 +51,7 @@ class Serializer[Return](typing.Protocol):
 class Memo(abc.ABC):
 
     def of(self, key: Key, session: sqlmodel.Session) -> Memo:
-        row = session.exec(sqlmodel.select(Row).where(Row.key == key)).first()
-        if ...:
+        if (row := session.exec(sqlmodel.select(Row).where(Row.key == key)).one_or_none()) is None:
             return Pending
         elif ...:
             Return
@@ -60,9 +60,9 @@ class Memo(abc.ABC):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Cache[Key, Return]:
+class AsyncCache[Key, Return]:
     duration: Duration
-    engine: sqlalchemy.Engine = dataclasses.field(init=True)
+    engine: sqlmodel.e Engine = dataclasses.field(init=True)
     size: int
 
     def __len__(self) -> int:
@@ -79,10 +79,10 @@ class Cache[Key, Return]:
         size: pydantic.PositiveInt,
         table_name: str,
         username: str,
-    ) -> Cache:
+    ) -> AsyncCache:
         return cls(
             duration=duration,
-            engine=sqlalchemy.create_engine(
+            engine=sqlalchemy.ext.asyncio.create_async_engine(
                 sqlalchemy.URL.create(
                     drivername='sqlite',
                     database=database,
