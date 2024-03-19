@@ -49,7 +49,7 @@ def m_time() -> unittest.mock.MagicMock:
 async def test_async_zero_args() -> None:
     call_count = 0
 
-    @atools.Memoize()
+    @atools.cache.LRU()
     async def foo() -> None:
         nonlocal call_count
         call_count += 1
@@ -64,7 +64,7 @@ async def test_async_zero_args() -> None:
 async def test_async_primitive_arg(arg) -> None:
     call_count = 0
 
-    @atools.Memoize()
+    @atools.cache.LRU()
     async def foo(_) -> None:
         nonlocal call_count
         call_count += 1
@@ -79,7 +79,7 @@ async def test_method() -> None:
     call_count = 0
 
     class Foo:
-        @atools.Memoize()
+        @atools.cache.LRU()
         async def foo(self) -> None:
             nonlocal call_count
             call_count += 1
@@ -100,7 +100,7 @@ async def test_classmethod() -> None:
 
     class Foo:
         @classmethod
-        @atools.Memoize()
+        @atools.cache.LRU()
         async def foo(cls) -> None:
             nonlocal call_count
             call_count += 1
@@ -125,7 +125,7 @@ async def test_async_size_expires_memos() -> None:
 
     class Foo:
 
-        @atools.Memoize(size=1)
+        @atools.cache.LRU(size=1)
         async def foo(self, _) -> None:
             nonlocal call_count
             call_count += 1
@@ -143,7 +143,7 @@ async def test_async_size_method_is_per_instance() -> None:
 
     class Foo:
 
-        @atools.Memoize(size=1)
+        @atools.cache.LRU(size=1)
         async def foo(self, _) -> None:
             nonlocal call_count
             call_count += 1
@@ -179,7 +179,7 @@ async def test_async_size_classmethod_is_per_class() -> None:
     class Foo:
 
         @classmethod
-        @atools.Memoize(size=1)
+        @atools.cache.LRU(size=1)
         async def foo(cls, _) -> None:
             nonlocal call_count
             call_count += 1
@@ -215,7 +215,7 @@ async def test_async_size_staticmethod_is_per_declaration() -> None:
     class Foo:
 
         @staticmethod
-        @atools.Memoize(size=1)
+        @atools.cache.LRU(size=1)
         async def foo(_) -> None:
             nonlocal call_count
             call_count += 1
@@ -249,7 +249,7 @@ async def test_herds_only_call_once() -> None:
     call_count = 0
     event = asyncio.Event()
 
-    @atools.Memoize()
+    @atools.cache.LRU()
     async def foo() -> None:
         nonlocal call_count
         await event.wait()
@@ -269,7 +269,7 @@ async def test_exceptions_are_saved() -> None:
     class FooException(Exception):
         ...
 
-    @atools.Memoize()
+    @atools.cache.LRU()
     async def foo() -> None:
         nonlocal call_count
         call_count += 1

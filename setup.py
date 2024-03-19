@@ -12,12 +12,10 @@ setup(
     author_email='c.d.evans87@gmail.com',
     description='Python 3.9+ async/sync memoize and rate decorators',
     extras_require={
-        'base': (base := [
-            *filter(None, (Path(__file__).parent / 'pip_requirements.txt').read_text().splitlines())
-        ]),
-        'test': (test := base + [
-            *filter(None, (Path(__file__).parent / 'test' / 'pip_requirements.txt').read_text().splitlines())
-        ]),
+        'base': (base := ['pydantic']),
+        'sql_cache': (sql_cache := base + ['sqlalchemy', 'sqlmodel']),
+        'requirements': (requirements := base + sql_cache),
+        'test': (test := requirements + ['pytest', 'pytest-asyncio', 'pytest-cov']),
     },
     install_requires=base,
 )

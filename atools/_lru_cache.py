@@ -17,13 +17,14 @@ import weakref
 from . import _base
 
 
+type Expire = float
 type Key = typing.Hashable
 type Keygen[** Params] = typing.Callable[Params, Key]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Memo(abc.ABC):
-    expire: float | None
+    expire: Expire | None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -108,7 +109,6 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
     duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None
     keygen: Keygen[Params]
     lock: dataclasses.Field[threading.Lock] = dataclasses.field(default_factory=threading.Lock)
-    # TODO: support keys_by_expire: dict[Expire, Key | list[Key]]
     memo_by_key: collections.OrderedDict[typing.Hashable, Memo] = dataclasses.field(
         default_factory=collections.OrderedDict
     )
@@ -166,7 +166,6 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
                 )
 
     def __get__(self, instance: _base.Instance, owner) -> BoundCreateContext[Params, Return]:
-        # FIXME: modifying momoss should require a lock.
         with self.lock:
             return self.BoundCreateContext[Params, Return](
                 duration=self.duration,

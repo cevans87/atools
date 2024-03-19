@@ -1,4 +1,6 @@
-dill
+pydantic
 pytest
 pytest-asyncio
 pytest-cov
+sqlalchemy
+sqlmodel
