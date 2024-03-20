@@ -34,6 +34,7 @@ class Pending[Return](Memo, abc.ABC):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncPending[Return](Pending[Return]):
+    # FIXME: make this a condition instead. Have the cache recheck itself.
     future: asyncio.Future[Return] = dataclasses.field(default_factory=asyncio.Future)
 
 
@@ -42,6 +43,7 @@ class MultiPending[Return](Pending):
     future: concurrent.futures.Future[Return] = dataclasses.field(default_factory=concurrent.futures.Future)
 
 
+# FIXME: Don't memoize exceptions.
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Raised(Memo):
     e: BaseException
@@ -62,7 +64,6 @@ class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContext[Params, Return]):
-    lock: asyncio.Lock = dataclasses.field(default_factory=lambda: asyncio.Lock())
 
     async def __call__(self, return_: Return) -> None:
         self.pending.future.set_result(return_)
@@ -84,7 +85,6 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContext[Params, Return]):
-    lock: threading.Lock = dataclasses.field(default_factory=lambda: threading.Lock())
 
     def __call__(self, return_: Return) -> None:
         self.pending.future.set_result(return_)
@@ -129,7 +129,7 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
     ) -> (
         AsyncContext[Params, Return]
         | MultiContext[Params, Return]
-        | _base.HerdFollower[Return]
+        | _base.HerdFollower[Return]  # FIXME: Remove this. Have herd followers block on cache.get(key) instead
         | _base.ShortCircuit[Return]
     ):
         key = self.keygen(*args, **kwargs)

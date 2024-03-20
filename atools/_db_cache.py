@@ -6,6 +6,7 @@ import asyncio
 import collections
 import concurrent.futures
 import dataclasses
+import hashlib
 import inspect
 import json
 import sys
@@ -17,26 +18,19 @@ import weakref
 
 import pydantic
 import sqlalchemy
+import sqlalchemy.orm
 import sqlalchemy.ext.asyncio
-import sqlmodel
 
 from . import _base
 
 
 type Duration = float
 type Expire = float
-type Key = typing.Hashable
+type Key = str
 type Keygen[** Params] = typing.Callable[Params, Key]
+type Value = object
 
 type Bytes = bytes
-
-
-class Row(sqlalchemy.orm.DeclarativeBase):
-    key: Key = sqlmodel.Field(primary_key=True)
-    bytes_: Bytes
-
-    def of(self, key: Key) -> Row:
-        return Memo[Return]()
 
 
 @typing.runtime_checkable
@@ -48,57 +42,42 @@ class Serializer[Return](typing.Protocol):
         ...
 
 
-class Memo(abc.ABC):
-
-    def of(self, key: Key, session: sqlmodel.Session) -> Memo:
-        if (row := session.exec(sqlmodel.select(Row).where(Row.key == key)).one_or_none()) is None:
-            return Pending
-        elif ...:
-            Return
-
-        return Memo[Return]()
+class RowBase(sqlalchemy.orm.DeclarativeBase):
+    __tablename__: str
+    expire: sqlalchemy.orm.Mapped[Expire | None] = sqlalchemy.orm.mapped_column()
+    key: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(primary_key=True, unique=True)
+    value: sqlalchemy.orm.Mapped[bytes] = sqlalchemy.orm.mapped_column()
+    version: int
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncCache[Key, Return]:
-    duration: Duration
-    engine: sqlmodel.e Engine = dataclasses.field(init=True)
-    size: int
+class Memo:
+    table_name: str
+    expire: Expire | None
+    key: str
+    value: Value
 
-    def __len__(self) -> int:
-        ...
 
-    @classmethod
-    def of(
-        cls,
-        key: Key,
-        database: str,
-        duration: Duration,
-        host: str,
-        password: str,
-        size: pydantic.PositiveInt,
-        table_name: str,
-        username: str,
-    ) -> AsyncCache:
-        return cls(
-            duration=duration,
-            engine=sqlalchemy.ext.asyncio.create_async_engine(
-                sqlalchemy.URL.create(
-                    drivername='sqlite',
-                    database=database,
-                    host=host,
-                    password=password,
-                    username=username,
-                )
-            ),
-        )
+#@dataclasses.dataclass(frozen=True, kw_only=True)
+#class Pending[Return](Memo, abc.ABC):
+#    future: asyncio.Future[Return] | concurrent.futures.Future[Return]
 
-    def get(self, key: Key) -> Memo[Return]:
-        with sqlmodel.Session(self.engine) as session:
-            return session.exec(sqlmodel.select(Memo[Return]).where(Memo[Return].key == key)).first()
 
-    def set(self, key: Key, memo: Memo) -> None:
-        ...
+#@dataclasses.dataclass(frozen=True, kw_only=True)
+#class Cache[Key, Return]:
+#    duration: Duration
+#    engine: sqlalchemy.Engine = dataclasses.field(init=True)
+#    size: int
+#
+#    def __len__(self) -> int:
+#        ...
+#
+#    def get(self, key: Key) -> Return | Memo[Return]:
+#        with sqlalchemy.orm.Session(self.engine) as session:
+#            session.begin()
+#
+#    def set(self, key: Key, memo: Memo) -> None:
+#        ...
 
 
 
@@ -107,24 +86,19 @@ class AsyncCache[Key, Return]:
 #    expire: Expire | None
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Pending[Return](Memo, abc.ABC):
-    future: asyncio.Future[Return] | concurrent.futures.Future[Return]
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncPending[Return](Pending[Return]):
-    future: asyncio.Future[Return] = dataclasses.field(default_factory=asyncio.Future)
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class MultiPending[Return](Pending):
-    future: concurrent.futures.Future[Return] = dataclasses.field(default_factory=concurrent.futures.Future)
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Raised(Memo):
-    e: BaseException
+#@dataclasses.dataclass(frozen=True, kw_only=True)
+#class Pending[Return](Memo, abc.ABC):
+#    future: asyncio.Future[Return] | concurrent.futures.Future[Return]
+#
+#
+#@dataclasses.dataclass(frozen=True, kw_only=True)
+#class AsyncPending[Return](Pending[Return]):
+#    session: sqlalchemy.ext.asyncio.AsyncSession
+#
+#
+#@dataclasses.dataclass(frozen=True, kw_only=True)
+#class MultiPending[Return](Pending):
+#    session: sqlalchemy.orm.Session
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -134,18 +108,24 @@ class Returned[Return](Memo, Exception):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
-    args: Params.args
-    kwargs: Params.kwargs
-    pending: Pending
-    signature: inspect.Signature
+    #args: Params.args
+    #kwargs: Params.kwargs
+    memo: Memo
+    session: sqlalchemy.ext.asyncio.AsyncSession | sqlalchemy.orm.Session
+    #signature: inspect.Signature
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContext[Params, Return]):
-    lock: asyncio.Lock = dataclasses.field(default_factory=lambda: asyncio.Lock())
+    session: sqlalchemy.ext.asyncio.AsyncSession
 
     async def __call__(self, return_: Return) -> None:
-        self.pending.future.set_result(return_)
+        self.memo.value = return_
+        self.session.add(self.memo)
+
+    async def __aenter__(self) -> typing.Self:
+        await self.session.begin()
+        return self
 
     @typing.overload
     async def __aexit__[ExcType: type[BaseException]](
@@ -157,17 +137,22 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if (exc_type, exc_val, exc_tb) == (None, None, None):
-            return None
-
-        self.pending.future.set_exception(exc_val)
+            await self.session.rollback()
+        else:
+            await self.session.commit()
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContext[Params, Return]):
-    lock: threading.Lock = dataclasses.field(default_factory=lambda: threading.Lock())
+    session: sqlalchemy.orm.Session
 
     def __call__(self, return_: Return) -> None:
-        self.pending.future.set_result(return_)
+        self.memo.value = return_
+        self.session.add(self.memo)
+
+    def __enter__(self) -> typing.Self:
+        self.session.begin()
+        return self
 
     @typing.overload
     def __exit__[ExcType: type[BaseException]](
@@ -179,18 +164,17 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if (exc_type, exc_val, exc_tb) == (None, None, None):
-            return None
-
-        self.pending.future.set_exception(exc_val)
+            self.session.commit()
+        else:
+            self.session.rollback()
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.ABC):
     duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None
+    engine: sqlalchemy.ext.asyncio.AsyncEngine | sqlalchemy.Engine
     keygen: Keygen[Params]
     lock: dataclasses.Field[threading.Lock] = dataclasses.field(default_factory=threading.Lock)
-    # TODO: Implement expiration
-    # key_by_expire: dict[Expire, Key] = dataclasses.field(default_factory=dict)
     memo_by_key: dict[Key, Memo]
     memo_by_key_by_instance: weakref.WeakKeyDictionary[_base.Instance, dict[Key, Memo]] = dataclasses.field(
         default_factory=weakref.WeakKeyDictionary
@@ -198,10 +182,10 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
     serializer: Serializer
     signature: inspect.signature
     size: int
+    table_name: str
 
     BoundCreateContext: typing.ClassVar[type[BoundCreateContext]]
     Context: typing.ClassVar[type[Context]] = Context
-    Pending: typing.ClassVar[type[Pending]] = Pending
 
     def __call__(
         self: AsyncCreateContext[Params, Return] | MultiCreateContext[Params, Return],
@@ -213,38 +197,53 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
         | _base.HerdFollower[Return]
         | _base.ShortCircuit[Return]
     ):
-        key = self.keygen(*args, **kwargs)
-        match self.cache.get(key):
-            case Returned(expire=expire, value=value) if expire is None or time.time() < expire:
-                self.cache.move_to_end(key)
-                return _base.ShortCircuit[Return](value=value)
-            case Raised(e=e, expire=expire) if expire is None or time.time() < expire:
-                self.cache.move_to_end(key)
-                raise e
-            case Pending(expire=expire, future=future) if expire is None or time.time() < expire:
-                self.cache.move_to_end(key)
-                if not future.done():
-                    return _base.HerdFollower(future=future)
-                else:
-                    try:
-                        self.cache[key] = Returned(expire=expire, value=(value := future.result()))
-                        return _base.ShortCircuit[Return](value=value)
-                    except Exception as e:
-                        self.cache[key] = Raised(expire=expire, e=e)
-                        raise
-            case None | Pending() | Raised() | Returned():
-                pending = self.cache[key] = self.Pending(
-                    expire=None if self.duration is None else time.time() + self.duration
-                )
-                self.cache.move_to_end(key)
-                if self.size is not None and self.size < len(self.cache):
-                    self.cache.popitem(last=False)
-                return self.Context(
-                    args=args,
-                    kwargs=kwargs,
-                    pending=pending,
-                    signature=self.signature,
-                )
+        ...
+        #key = self.keygen(*args, **kwargs)
+        #with
+        #
+        #
+        #match await self.cache.get(key):
+        #    case
+        #
+        #match self.cache.get(key):
+        #    case self.Context.Session(session):
+        #    case object(return_):
+        #        ...
+
+        #    case Pending(memo=memo, session=session):
+        #        return self.Context(
+
+        #        )
+        #    case Returned(expire=expire, value=value) if expire is None or time.time() < expire:
+        #        self.cache.move_to_end(key)
+        #        return _base.ShortCircuit[Return](value=value)
+        #    case Raised(e=e, expire=expire) if expire is None or time.time() < expire:
+        #        self.cache.move_to_end(key)
+        #        raise e
+        #    case Pending(expire=expire, future=future) if expire is None or time.time() < expire:
+        #        self.cache.move_to_end(key)
+        #        if not future.done():
+        #            return _base.HerdFollower(future=future)
+        #        else:
+        #            try:
+        #                self.cache[key] = Returned(expire=expire, value=(value := future.result()))
+        #                return _base.ShortCircuit[Return](value=value)
+        #            except Exception as e:
+        #                self.cache[key] = Raised(expire=expire, e=e)
+        #                raise
+        #    case None | Pending() | Raised() | Returned():
+        #        pending = self.cache[key] = self.Pending(
+        #            expire=None if self.duration is None else time.time() + self.duration
+        #        )
+        #        self.cache.move_to_end(key)
+        #        if self.size is not None and self.size < len(self.cache):
+        #            self.cache.popitem(last=False)
+        #        return self.Context(
+        #            args=args,
+        #            kwargs=kwargs,
+        #            pending=pending,
+        #            signature=self.signature,
+        #        )
 
     def __get__(self, instance: _base.Instance, owner) -> BoundCreateContext[Params, Return]:
         with self.lock:
@@ -252,28 +251,49 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
                 duration=self.duration,
                 instance=instance,
                 keygen=self.keygen,
-                cache=self.cache_by_instance.setdefault(instance, dataclasses.replace(
-                    self.cache,
-                    table_name=self.cache.table_name,
-                )),
-                cache_by_instance=self.cache_by_instance,
                 signature=self.signature,
                 size=self.size,
+                # FIXME: using str(instance) as part of the table name is brittle.
+                table_name=f'{self.table_name}.{instance}'
             )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base.AsyncCreateContext[Params, Return]):
+    engine: sqlalchemy.ext.asyncio.AsyncEngine
+
     BoundCreateContext: typing.ClassVar[type[AsyncBoundCreateContext]]
     Context: typing.ClassVar[type[AsyncContext]] = AsyncContext
-    Pending: typing.ClassVar[type[AsyncPending]] = AsyncPending
+
+    async def __call__(
+        self: AsyncCreateContext[Params, Return] | MultiCreateContext[Params, Return],
+        args: Params.args,
+        kwargs: Params.kwargs,
+    ) -> AsyncContext[Params, Return] | MultiContext[Params, Return] | Return:
+        key = self.keygen(*args, **kwargs)
+        memo = Memo(key=key, table_name=self.table_name, expire=time.time() + self.duration, value=...)
+        row = memo.row()
+        async with sqlalchemy.ext.asyncio.AsyncSession(self.engine) as session, session.begin():
+            result = await session.execute(sqlalchemy.select(row).where(row.key == key))
+
+        match result.one_or_none():
+            case None | Memo():
+                ...
+
+        return self.Context(
+            memo=
+            session=session,
+        )
+
+        print(result.fetchall())
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base.MultiCreateContext[Params, Return]):
+    engine: sqlalchemy.Engine
+
     BoundCreateContext: typing.ClassVar[type[MultiBoundCreateContext]]
     Context: typing.ClassVar[type[MultiContext]] = MultiContext
-    Pending: typing.ClassVar[type[MultiPending]] = MultiPending
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -354,6 +374,7 @@ class Decorator[** Params, Return]:
                         serializer=self.serializer,
                         signature=signature,
                         size=self.size,
+                        table_name=self.name,
                     ),
                     *decoratee.create_contexts,
                 ]),
@@ -369,6 +390,7 @@ class Decorator[** Params, Return]:
                         serializer=self.serializer,
                         signature=signature,
                         size=self.size,
+                        table_name=self.name,
                     ),
                     *decoratee.create_contexts,
                 ]),
