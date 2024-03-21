@@ -42,20 +42,14 @@ class Serializer[Return](typing.Protocol):
         ...
 
 
-class RowBase(sqlalchemy.orm.DeclarativeBase):
-    __tablename__: str
+class Base(sqlalchemy.orm.DeclarativeBase):
+    ...
+
+
+class MemoBase(Base):
     expire: sqlalchemy.orm.Mapped[Expire | None] = sqlalchemy.orm.mapped_column()
     key: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(primary_key=True, unique=True)
     value: sqlalchemy.orm.Mapped[bytes] = sqlalchemy.orm.mapped_column()
-    version: int
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Memo:
-    table_name: str
-    expire: Expire | None
-    key: str
-    value: Value
 
 
 #@dataclasses.dataclass(frozen=True, kw_only=True)
@@ -110,7 +104,7 @@ class Returned[Return](Memo, Exception):
 class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
     #args: Params.args
     #kwargs: Params.kwargs
-    memo: Memo
+    memo: MemoBase
     session: sqlalchemy.ext.asyncio.AsyncSession | sqlalchemy.orm.Session
     #signature: inspect.Signature
 
@@ -124,6 +118,7 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
         self.session.add(self.memo)
 
     async def __aenter__(self) -> typing.Self:
+        # TODO lock the row
         await self.session.begin()
         return self
 
@@ -175,86 +170,44 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
     engine: sqlalchemy.ext.asyncio.AsyncEngine | sqlalchemy.Engine
     keygen: Keygen[Params]
     lock: dataclasses.Field[threading.Lock] = dataclasses.field(default_factory=threading.Lock)
-    memo_by_key: dict[Key, Memo]
-    memo_by_key_by_instance: weakref.WeakKeyDictionary[_base.Instance, dict[Key, Memo]] = dataclasses.field(
-        default_factory=weakref.WeakKeyDictionary
-    )
+    #memo_by_key: dict[Key, MemoBase]
+    #memo_by_key_by_instance: weakref.WeakKeyDictionary[_base.Instance, dict[Key, MemoBase]] = dataclasses.field(
+    #    default_factory=weakref.WeakKeyDictionary
+    #)
+    memo_t: type[MemoBase]
     serializer: Serializer
     signature: inspect.signature
     size: int
-    table_name: str
 
     BoundCreateContext: typing.ClassVar[type[BoundCreateContext]]
     Context: typing.ClassVar[type[Context]] = Context
 
-    def __call__(
-        self: AsyncCreateContext[Params, Return] | MultiCreateContext[Params, Return],
+    @typing.overload
+    async def __call__(
+        self: AsyncCreateContext[Params, Return],
         args: Params.args,
         kwargs: Params.kwargs,
-    ) -> (
-        AsyncContext[Params, Return]
-        | MultiContext[Params, Return]
-        | _base.HerdFollower[Return]
-        | _base.ShortCircuit[Return]
-    ):
-        ...
-        #key = self.keygen(*args, **kwargs)
-        #with
-        #
-        #
-        #match await self.cache.get(key):
-        #    case
-        #
-        #match self.cache.get(key):
-        #    case self.Context.Session(session):
-        #    case object(return_):
-        #        ...
+    ) -> AsyncContext[Params, Return] | Return: ...
 
-        #    case Pending(memo=memo, session=session):
-        #        return self.Context(
+    @typing.overload
+    def __call__(
+        self: MultiCreateContext[Params, Return],
+        args: Params.args,
+        kwargs: Params.kwargs,
+    ) -> MultiContext[Params, Return] | Return: ...
 
-        #        )
-        #    case Returned(expire=expire, value=value) if expire is None or time.time() < expire:
-        #        self.cache.move_to_end(key)
-        #        return _base.ShortCircuit[Return](value=value)
-        #    case Raised(e=e, expire=expire) if expire is None or time.time() < expire:
-        #        self.cache.move_to_end(key)
-        #        raise e
-        #    case Pending(expire=expire, future=future) if expire is None or time.time() < expire:
-        #        self.cache.move_to_end(key)
-        #        if not future.done():
-        #            return _base.HerdFollower(future=future)
-        #        else:
-        #            try:
-        #                self.cache[key] = Returned(expire=expire, value=(value := future.result()))
-        #                return _base.ShortCircuit[Return](value=value)
-        #            except Exception as e:
-        #                self.cache[key] = Raised(expire=expire, e=e)
-        #                raise
-        #    case None | Pending() | Raised() | Returned():
-        #        pending = self.cache[key] = self.Pending(
-        #            expire=None if self.duration is None else time.time() + self.duration
-        #        )
-        #        self.cache.move_to_end(key)
-        #        if self.size is not None and self.size < len(self.cache):
-        #            self.cache.popitem(last=False)
-        #        return self.Context(
-        #            args=args,
-        #            kwargs=kwargs,
-        #            pending=pending,
-        #            signature=self.signature,
-        #        )
+    def __call__(self, args, kwargs): ...
+    del __call__
 
     def __get__(self, instance: _base.Instance, owner) -> BoundCreateContext[Params, Return]:
         with self.lock:
             return self.BoundCreateContext[Params, Return](
                 duration=self.duration,
-                instance=instance,
+                engine=self.engine,
                 keygen=self.keygen,
+                memo_t=type('Memo', (MemoBase,), {'__tablename__': f'{self.memo_t.__tablename__}.{instance}'}),
                 signature=self.signature,
                 size=self.size,
-                # FIXME: using str(instance) as part of the table name is brittle.
-                table_name=f'{self.table_name}.{instance}'
             )
 
 
@@ -271,17 +224,22 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
         kwargs: Params.kwargs,
     ) -> AsyncContext[Params, Return] | MultiContext[Params, Return] | Return:
         key = self.keygen(*args, **kwargs)
-        memo = Memo(key=key, table_name=self.table_name, expire=time.time() + self.duration, value=...)
-        row = memo.row()
-        async with sqlalchemy.ext.asyncio.AsyncSession(self.engine) as session, session.begin():
-            result = await session.execute(sqlalchemy.select(row).where(row.key == key))
 
-        match result.one_or_none():
-            case None | Memo():
-                ...
+        async with sqlalchemy.ext.asyncio.AsyncSession(self.engine) as session, session.begin():
+            match (
+                await session.execute(sqlalchemy.select(self.memo_t).with_for_update().where(key=key))
+            ).first():
+                case self.memo_t(memo) if memo.value is None or (
+                    memo.expire is not None and memo.expire <= time.time()
+                ):
+                    ...
+                case self.memo_t(memo) if memo.expire is None or time.time() <= memo.expire:
+                    return self.serializer.loads(memo.value)
+                case _:
+                    ...
 
         return self.Context(
-            memo=
+            memo=self.memo_t(key=self.key),
             session=session,
         )
 
@@ -291,6 +249,7 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base.MultiCreateContext[Params, Return]):
     engine: sqlalchemy.Engine
+    memo_t: type[MemoBase]
 
     BoundCreateContext: typing.ClassVar[type[MultiBoundCreateContext]]
     Context: typing.ClassVar[type[MultiContext]] = MultiContext
@@ -363,6 +322,9 @@ class Decorator[** Params, Return]:
 
                 return bind.args, tuple(sorted(bind.kwargs))
 
+        class Memo(MemoBase):
+            __tablename__ = self.name
+
         if inspect.iscoroutinefunction(decoratee.decoratee):
             decoratee: _base.AsyncDecorated[Params, Return]
             decorated: _base.AsyncDecorated[Params, Return] = dataclasses.replace(
@@ -371,6 +333,7 @@ class Decorator[** Params, Return]:
                     AsyncCreateContext(
                         duration=self.duration,
                         keygen=keygen,
+                        memo_t=Memo,
                         serializer=self.serializer,
                         signature=signature,
                         size=self.size,
@@ -387,6 +350,7 @@ class Decorator[** Params, Return]:
                     MultiCreateContext(
                         duration=self.duration,
                         keygen=keygen,
+                        memo_t=Memo,
                         serializer=self.serializer,
                         signature=signature,
                         size=self.size,
