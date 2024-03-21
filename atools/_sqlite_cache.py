@@ -18,8 +18,9 @@ import weakref
 
 import pydantic
 import sqlalchemy
-import sqlalchemy.orm
+import sqlalchemy.dialects.sqlite
 import sqlalchemy.ext.asyncio
+import sqlalchemy.orm
 
 from . import _base
 
@@ -46,15 +47,66 @@ class Base(sqlalchemy.orm.DeclarativeBase):
     ...
 
 
-class MemoBase(Base):
+class RowBase(Base):
     expire: sqlalchemy.orm.Mapped[Expire | None] = sqlalchemy.orm.mapped_column()
     key: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(primary_key=True, unique=True)
     value: sqlalchemy.orm.Mapped[bytes] = sqlalchemy.orm.mapped_column()
 
 
-#@dataclasses.dataclass(frozen=True, kw_only=True)
-#class Pending[Return](Memo, abc.ABC):
-#    future: asyncio.Future[Return] | concurrent.futures.Future[Return]
+class Session[Return](abc.ABC):
+
+    def add(self, return_: Return) -> None:
+        ...
+
+    @typing.overload
+    async def commit(self) -> None: ...
+    @typing.overload
+    def commit(self) -> None: ...
+    def commit(self): ...
+    del commit
+
+    @typing.overload
+    async def rollback(self: AsyncSession[Return]) -> None: ...
+    @typing.overload
+    def rollback(self: MultiSession[Return]) -> None: ...
+    def rollback(self): ...
+    del rollback
+
+
+class AsyncSession[Return]:
+
+    def add(self, return_: Return):
+        ...
+
+    async def commit(self):
+        ...
+
+    async def rollback(self):
+        ...
+
+
+class MultiSession[Return]:
+
+    def add(self, return_: Return):
+        ...
+
+    def commit(self):
+        ...
+
+    def rollback(self):
+        ...
+
+
+#class Future[Return]:
+#    ...
+#
+#
+#class AsyncFuture[Return](Future[Return]):
+#    ...
+#
+#
+#class MultiFuture[Return](Future[Return]):
+#    ...
 
 
 #@dataclasses.dataclass(frozen=True, kw_only=True)
@@ -66,13 +118,12 @@ class MemoBase(Base):
 #    def __len__(self) -> int:
 #        ...
 #
-#    def get(self, key: Key) -> Return | Memo[Return]:
+#    async def get(self, key: Key) -> Return | AsyncFuture[Return]:
 #        with sqlalchemy.orm.Session(self.engine) as session:
 #            session.begin()
 #
 #    def set(self, key: Key, memo: Memo) -> None:
 #        ...
-
 
 
 #@dataclasses.dataclass(frozen=True, kw_only=True)
@@ -95,22 +146,22 @@ class MemoBase(Base):
 #    session: sqlalchemy.orm.Session
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Returned[Return](Memo, Exception):
-    value: Return
+#@dataclasses.dataclass(frozen=True, kw_only=True)
+#class Returned[Return](Memo, Exception):
+#    value: Return
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
-    #args: Params.args
-    #kwargs: Params.kwargs
-    memo: MemoBase
-    session: sqlalchemy.ext.asyncio.AsyncSession | sqlalchemy.orm.Session
-    #signature: inspect.Signature
+    event: asyncio.Event | threading.Event
+    memo: RowBase
+    session: Session[Return]
+    #session: sqlalchemy.ext.asyncio.AsyncSession | sqlalchemy.orm.Session
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContext[Params, Return]):
+    event: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
     session: sqlalchemy.ext.asyncio.AsyncSession
 
     async def __call__(self, return_: Return) -> None:
@@ -118,8 +169,9 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
         self.session.add(self.memo)
 
     async def __aenter__(self) -> typing.Self:
+        # Session should have already been started.
         # TODO lock the row
-        await self.session.begin()
+        #await self.session.begin()
         return self
 
     @typing.overload
@@ -135,6 +187,7 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
             await self.session.rollback()
         else:
             await self.session.commit()
+        self.event.set()
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -166,15 +219,18 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.ABC):
+    """Serves as the db."""
     duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None
-    engine: sqlalchemy.ext.asyncio.AsyncEngine | sqlalchemy.Engine
+    #engine: sqlalchemy.ext.asyncio.AsyncEngine | sqlalchemy.Engine
     keygen: Keygen[Params]
-    lock: dataclasses.Field[threading.Lock] = dataclasses.field(default_factory=threading.Lock)
-    #memo_by_key: dict[Key, MemoBase]
-    #memo_by_key_by_instance: weakref.WeakKeyDictionary[_base.Instance, dict[Key, MemoBase]] = dataclasses.field(
-    #    default_factory=weakref.WeakKeyDictionary
-    #)
-    memo_t: type[MemoBase]
+    lock: asyncio.Lock | threading.Lock
+
+    return_by_key: dict[Key, Context[Return] | Return] = dataclasses.field(default_factory=dict)
+    return_by_key_by_instance: weakref.WeakKeyDictionary[
+        _base.Instance, dict[Key, Context[Return] | Return]
+    ] = dataclasses.field(default_factory=weakref.WeakKeyDictionary)
+
+    row_t: type[RowBase]
     serializer: Serializer
     signature: inspect.signature
     size: int
@@ -188,24 +244,33 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
         args: Params.args,
         kwargs: Params.kwargs,
     ) -> AsyncContext[Params, Return] | Return: ...
-
     @typing.overload
     def __call__(
         self: MultiCreateContext[Params, Return],
         args: Params.args,
         kwargs: Params.kwargs,
     ) -> MultiContext[Params, Return] | Return: ...
-
     def __call__(self, args, kwargs): ...
     del __call__
 
-    def __get__(self, instance: _base.Instance, owner) -> BoundCreateContext[Params, Return]:
+    @typing.overload
+    def __get__(
+        self: AsyncCreateContext[Params, Return],
+        instance: _base.Instance,
+        owner
+    ) -> AsyncBoundCreateContext[Params, Return]: ...
+    @typing.overload
+    def __get__(
+        self: MultiCreateContext[Params, Return],
+        instance: _base.Instance,
+        owner
+    ) -> MultiBoundCreateContext[Params, Return]: ...
+    def __get__(self, instance, owner):
         with self.lock:
             return self.BoundCreateContext[Params, Return](
                 duration=self.duration,
-                engine=self.engine,
                 keygen=self.keygen,
-                memo_t=type('Memo', (MemoBase,), {'__tablename__': f'{self.memo_t.__tablename__}.{instance}'}),
+                row_t=type('row', (RowBase,), {'__tablename__': f'{self.row_t.__tablename__}__{instance}'}),
                 signature=self.signature,
                 size=self.size,
             )
@@ -214,16 +279,40 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base.AsyncCreateContext[Params, Return]):
     engine: sqlalchemy.ext.asyncio.AsyncEngine
+    lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
 
     BoundCreateContext: typing.ClassVar[type[AsyncBoundCreateContext]]
     Context: typing.ClassVar[type[AsyncContext]] = AsyncContext
+    Session: typing.ClassVar[type[AsyncSession]] = AsyncSession
 
-    async def __call__(
-        self: AsyncCreateContext[Params, Return] | MultiCreateContext[Params, Return],
-        args: Params.args,
-        kwargs: Params.kwargs,
-    ) -> AsyncContext[Params, Return] | MultiContext[Params, Return] | Return:
+    async def __call__(self, args: Params.args, kwargs: Params.kwargs) -> AsyncContext[Params, Return] | Return:
         key = self.keygen(*args, **kwargs)
+
+        async with self.lock:
+            while (context := self.return_by_key.get(key)) is not None:
+                match context:
+                    case AsyncContext(event=event):
+                        self.lock.release()
+                        try:
+                            await event.wait()
+                        finally:
+                            await self.lock.acquire()
+                    case return_:
+                        return return_
+
+            session = self.sess
+            sessionmaker = sqlalchemy.ext.asyncio.async_sessionmaker(self.engine)
+
+            context = self.Context(
+                session=
+            )
+
+        connection = await sqlalchemy.ext.asyncio.AsyncConnection(self.engine)
+        transaction = await connection.begin()
+        try:
+            transaction.add()
+        finally:
+            await transaction.rollback()
 
         async with sqlalchemy.ext.asyncio.AsyncSession(self.engine) as session, session.begin():
             match (
@@ -249,7 +338,7 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base.MultiCreateContext[Params, Return]):
     engine: sqlalchemy.Engine
-    memo_t: type[MemoBase]
+    lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
     BoundCreateContext: typing.ClassVar[type[MultiBoundCreateContext]]
     Context: typing.ClassVar[type[MultiContext]] = MultiContext
@@ -299,6 +388,7 @@ class Decorator[** Params, Return]:
     keygen: Keygen[Params] = ...
     serializer: Serializer = ...
     size: int = sys.maxsize
+    url: str = ':memory:'
 
     @typing.overload
     def __call__(
@@ -322,8 +412,10 @@ class Decorator[** Params, Return]:
 
                 return bind.args, tuple(sorted(bind.kwargs))
 
-        class Memo(MemoBase):
-            __tablename__ = self.name
+        class Row(RowBase):
+            __tablename__ = self.name.replace('.', '__')
+
+        url = f'sqlite://{self.url}'
 
         if inspect.iscoroutinefunction(decoratee.decoratee):
             decoratee: _base.AsyncDecorated[Params, Return]
@@ -332,12 +424,12 @@ class Decorator[** Params, Return]:
                 create_contexts=tuple([
                     AsyncCreateContext(
                         duration=self.duration,
+                        engine=sqlalchemy.ext.asyncio.create_async_engine(url),
                         keygen=keygen,
-                        memo_t=Memo,
+                        row_t=Row,
                         serializer=self.serializer,
                         signature=signature,
                         size=self.size,
-                        table_name=self.name,
                     ),
                     *decoratee.create_contexts,
                 ]),
@@ -349,12 +441,12 @@ class Decorator[** Params, Return]:
                 create_contexts=tuple([
                     MultiCreateContext(
                         duration=self.duration,
+                        engine=sqlalchemy.create_engine(url),
                         keygen=keygen,
-                        memo_t=Memo,
+                        row_t=Row,
                         serializer=self.serializer,
                         signature=signature,
                         size=self.size,
-                        table_name=self.name,
                     ),
                     *decoratee.create_contexts,
                 ]),
