@@ -258,42 +258,23 @@ class Decorator[** Params, Return]:
 
                 return bind.args, tuple(sorted(bind.kwargs))
 
-        if inspect.iscoroutinefunction(decoratee.decoratee):
-            decoratee: _base.AsyncDecorated[Params, Return]
-            decorated: _base.AsyncDecorated[Params, Return] = _base.AsyncDecorated[Params, Return](
-                create_contexts=tuple([
-                    AsyncCreateContext(
-                        duration=self.duration,
-                        keygen=keygen,
-                        signature=signature,
-                        size=self.size,
-                    ),
-                    *decoratee.create_contexts,
-                ]),
-                decoratee=decoratee.decoratee,
-                register=decoratee.register,
-                register_key=decoratee.register_key,
-                __name__=decoratee.__name__,
-                __qualname__=decoratee.__qualname__,
-            )
-        else:
-            decoratee: _base.MultiDecorated[Params, Return]
-            decorated: _base.MultiDecorated[Params, Return] = _base.MultiDecorated[Params, Return](
-                create_contexts=tuple([
-                    MultiCreateContext(
-                        duration=self.duration,
-                        keygen=keygen,
-                        signature=signature,
-                        size=self.size,
-                    ),
-                    *decoratee.create_contexts,
-                ]),
-                decoratee=decoratee.decoratee,
-                register=decoratee.register,
-                register_key=decoratee.register_key,
-                __name__=decoratee.__name__,
-                __qualname__=decoratee.__qualname__,
-            )
+        match decoratee:
+            case _base.AsyncDecorated():
+                create_context_t = AsyncCreateContext
+            case _base.MultiDecorated():
+                create_context_t = MultiCreateContext
+            case _: assert False, 'Unreachable'
+
+        create_context: CreateContext[Params, Return] = create_context_t(
+            duration=self.duration,
+            keygen=keygen,
+            signature=signature,
+            size=self.size,
+        )
+
+        decorated: _base.Decorated[Params, Return] = dataclasses.replace(
+            decoratee, create_contexts=tuple([create_context, *decoratee.create_contexts])
+        )
 
         decorated.register.decoratees[decorated.register_key] = decorated
 

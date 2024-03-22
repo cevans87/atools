@@ -232,6 +232,7 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
 
     row_t: type[RowBase]
     serializer: Serializer
+    session_maker: sqlalchemy.orm.sessionmaker | sqlalchemy.ext.asyncio.async_sessionmaker
     signature: inspect.signature
     size: int
 
@@ -280,6 +281,7 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
 class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base.AsyncCreateContext[Params, Return]):
     engine: sqlalchemy.ext.asyncio.AsyncEngine
     lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
+    session_maker: sqlalchemy.ext.asyncio.async_sessionmaker
 
     BoundCreateContext: typing.ClassVar[type[AsyncBoundCreateContext]]
     Context: typing.ClassVar[type[AsyncContext]] = AsyncContext
@@ -300,7 +302,8 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
                     case return_:
                         return return_
 
-            session = self.sess
+            session = self.session
+
             sessionmaker = sqlalchemy.ext.asyncio.async_sessionmaker(self.engine)
 
             context = self.Context(
@@ -339,6 +342,7 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
 class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base.MultiCreateContext[Params, Return]):
     engine: sqlalchemy.Engine
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    session_maker: sqlalchemy.orm.sessionmaker
 
     BoundCreateContext: typing.ClassVar[type[MultiBoundCreateContext]]
     Context: typing.ClassVar[type[MultiContext]] = MultiContext
@@ -407,50 +411,40 @@ class Decorator[** Params, Return]:
         signature = inspect.signature(decoratee.decoratee)
         if (keygen := self.keygen) is ...:
             def keygen(*args, **kwargs) -> Key:
-                bind = signature.bind(*args, **kwargs)
-                bind.apply_defaults()
+                bound = signature.bind(*args, **kwargs)
+                bound.apply_defaults()
 
-                return bind.args, tuple(sorted(bind.kwargs))
-
-        class Row(RowBase):
-            __tablename__ = self.name.replace('.', '__')
+                return bound.args, tuple(sorted(bound.kwargs))
 
         url = f'sqlite://{self.url}'
 
-        if inspect.iscoroutinefunction(decoratee.decoratee):
-            decoratee: _base.AsyncDecorated[Params, Return]
-            decorated: _base.AsyncDecorated[Params, Return] = dataclasses.replace(
-                decoratee,
-                create_contexts=tuple([
-                    AsyncCreateContext(
-                        duration=self.duration,
-                        engine=sqlalchemy.ext.asyncio.create_async_engine(url),
-                        keygen=keygen,
-                        row_t=Row,
-                        serializer=self.serializer,
-                        signature=signature,
-                        size=self.size,
-                    ),
-                    *decoratee.create_contexts,
-                ]),
-            )
-        else:
-            decoratee: _base.MultiDecorated[Params, Return]
-            decorated: _base.MultiDecorated[Params, Return] = dataclasses.replace(
-                decoratee,
-                create_contexts=tuple([
-                    MultiCreateContext(
-                        duration=self.duration,
-                        engine=sqlalchemy.create_engine(url),
-                        keygen=keygen,
-                        row_t=Row,
-                        serializer=self.serializer,
-                        signature=signature,
-                        size=self.size,
-                    ),
-                    *decoratee.create_contexts,
-                ]),
-            )
+        match decoratee:
+            case _base.AsyncDecorated():
+                create_context_t = AsyncCreateContext
+                engine = sqlalchemy.ext.asyncio.create_async_engine(url)
+                session_maker = sqlalchemy.ext.asyncio.async_sessionmaker(
+                    sqlalchemy.ext.asyncio.create_async_engine(url)
+                )
+            case _base.MultiDecorated():
+                create_context_t = MultiCreateContext
+                session_maker = sqlalchemy.orm.sessionmaker(
+                    sqlalchemy.create_engine(url)
+                )
+            case _: assert False, 'Unreachable'
+
+        create_context: CreateContext[Params, Return] = create_context_t(
+            duration=self.duration,
+            keygen=keygen,
+            row_t=type[RowBase]('Row', (RowBase,), {'__tablename__': self.name.replace('.', '__')}),
+            serializer=self.serializer,
+            session_maker=session_maker,
+            signature=signature,
+            size=self.size,
+        )
+
+        decorated: _base.Decorated[Params, Return] = dataclasses.replace(
+            decoratee, create_contexts=tuple([create_context, *decoratee.create_contexts])
+        )
 
         decorated.register.decoratees[decorated.register_key] = decorated
 

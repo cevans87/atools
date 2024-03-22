@@ -406,15 +406,10 @@ class Decorator[** Params, Return]:
         self.register.links.setdefault(register_key, set())
 
         if inspect.iscoroutinefunction(decoratee):
-            decorated = AsyncDecorated[Params, Return](
-                decoratee=decoratee,
-                register=self.register,
-                register_key=register_key,
-                __name__=decoratee.__name__,
-                __qualname__=decoratee.__qualname__,
-            )
+            decorated_t = AsyncDecorated
         else:
-            decorated = MultiDecorated[Params, Return](
+            decorated_t = MultiDecorated
+        decorated: Decorated[Params, Return] = decorated_t(
                 decoratee=decoratee,
                 register=self.register,
                 register_key=register_key,
