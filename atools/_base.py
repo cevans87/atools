@@ -22,38 +22,13 @@ class Exception(builtins.Exception):  # noqa
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class ShortCircuit[Return]:
-    value: Return
+class Register(abc.ABC):
+    class Key(tuple[str, ...]):
+        def __str__(self) -> str:
+            return '.'.join(self)
 
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class HerdFollower[Result](abc.ABC):
-    future: asyncio.Future[Result] | concurrent.futures.Future[Result]
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncHerdFollower[Result](HerdFollower[Result]):
-    future: asyncio.Future[Result] = dataclasses.field(default_factory=asyncio.Future)
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class MultiHerdFollower[Result](HerdFollower[Result]):
-    future: concurrent.futures.Future[Result] = dataclasses.field(default_factory=concurrent.futures.Future)
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Pending[Result](abc.ABC):
-    future: asyncio.Future[Result] | concurrent.futures.Future[Result]
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncPending[Result](Pending[Result]):
-    future: asyncio.Future[Result] = dataclasses.field(default_factory=asyncio.Future)
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class MultiPending[Result](Pending[Result]):
-    future: concurrent.futures.Future[Result] = dataclasses.field(default_factory=concurrent.futures.Future)
+    decoratees: dict[Key, Decoratee] = dataclasses.field(default_factory=dict)
+    links: dict[Key, set[Name]] = dataclasses.field(default_factory=dict)
 
 
 class Decoratee[** Params, Return](typing.Protocol):
@@ -71,8 +46,14 @@ class MultiDecoratee[** Params, Return](typing.Protocol):
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Context[** Params, Return](abc.ABC):
 
-    def __call__(self, return_: Return) -> None:
-        pass
+    @typing.overload
+    async def __call__(self: AsyncContext[Params, Return], return_: Return) -> None: ...
+
+    @typing.overload
+    def __call__(self: MultiContext[Params, Return], return_: Return) -> None: ...
+
+    def __call__(self, return_): ...
+    del __call__
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -116,109 +97,63 @@ class MultiContext[** Params, Return](Context[Params, Return], abc.ABC):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class BoundContext[** Params, Return](Context[Params, Return], abc.ABC):
-    instance: Instance
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncBoundContext[** Params, Return](AsyncContext[Params, Return], BoundContext[Params, Return], abc.ABC):
-    ...
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class MultiBoundContext[** Params, Return](MultiContext[Params, Return], BoundContext[Params, Return], abc.ABC):
-    ...
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
 class CreateContext[** Params, Return](abc.ABC):
-
-    BoundCreateContext: typing.ClassVar[type[BoundCreateContext]]
     Context: typing.ClassVar[type[Context]] = Context
+
+    instance: Instance = ...
+    instance_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
     @typing.overload
     def __call__(
         self: AsyncCreateContext[Params, Return],
         args: Params.args,
         kwargs: Params.kwargs,
-    ) -> AsyncContext[Params, Return] | ShortCircuit[Return]: ...
+    ) -> AsyncContext[Params, Return] | Return: ...
 
     @typing.overload
     def __call__(
         self: MultiCreateContext[Params, Return],
         args: Params.args,
         kwargs: Params.kwargs,
-    ) -> MultiContext[Params, Return] | ShortCircuit[Return]: ...
+    ) -> MultiContext[Params, Return] | Return: ...
 
     def __call__(self, args, kwargs):
         return self.Context[Params, Return](args=args, kwargs=kwargs)
 
-    def __get__(self, instance: Instance, owner) -> BoundCreateContext[Params, Return]:
-        return self.BoundCreateContext[Params, Return](instance=instance)
+    def __get__(self, instance: Instance, owner) -> typing.Self:
+        return dataclasses.replace(self, instance=instance)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], abc.ABC):
-    BoundCreateContext: typing.ClassVar[type[AsyncBoundCreateContext]]
     Context: typing.ClassVar[type[AsyncContext]] = AsyncContext
+
+    async def __call__(
+        self,
+        args: Params.args,
+        kwargs: Params.kwargs,
+    ) -> AsyncContext[Params, Return] | Return:
+        return AsyncContext[Params, Return](args=args, kwargs=kwargs)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiCreateContext[** Params, Return](CreateContext[Params, Return], abc.ABC):
-    BoundCreateContext: typing.ClassVar[type[MultiBoundCreateContext]]
     Context: typing.ClassVar[type[MultiContext]] = MultiContext
 
     def __call__(
         self,
         args: Params.args,
         kwargs: Params.kwargs,
-    ) -> MultiContext[Params, Return] | ShortCircuit[Return]:
-        return self.Context[Params, Return](args=args, kwargs=kwargs)
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class BoundCreateContext[** Params, Return](CreateContext[Params, Return], abc.ABC):
-    instance: Instance
-
-
-CreateContext.BoundCreateContext = BoundCreateContext
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncBoundCreateContext[** Params, Return](
-    AsyncCreateContext[Params, Return], BoundCreateContext[Params, Return], abc.ABC
-):
-    ...
-
-
-AsyncCreateContext.BoundCreateContext = AsyncBoundCreateContext
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class MultiBoundCreateContext[** Params, Return](
-    MultiCreateContext[Params, Return], BoundCreateContext[Params, Return], abc.ABC
-):
-    ...
-
-
-MultiCreateContext.BoundCreateContext = MultiBoundCreateContext
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Register(abc.ABC):
-    class Key(tuple[str, ...]):
-        def __str__(self) -> str:
-            return '.'.join(self)
-
-    decoratees: dict[Key, Decoratee] = dataclasses.field(default_factory=dict)
-    links: dict[Key, set[Name]] = dataclasses.field(default_factory=dict)
+    ) -> MultiContext[Params, Return] | Return:
+        return MultiContext[Params, Return](args=args, kwargs=kwargs)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Decorated[** Params, Return](abc.ABC):
     create_contexts: tuple[CreateContext[Params, Return], ...] = ()
     decoratee: Decoratee[Params, Return]
-    lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    instance: Instance = ...
+    instance_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     register: Register
     register_key: Register.Key
     __name__: str
@@ -226,68 +161,55 @@ class Decorated[** Params, Return](abc.ABC):
 
     __call__: typing.ClassVar[typing.Callable[Params, typing.Awaitable[Return] | Return]]
 
-    BoundDecorated: typing.ClassVar[type[BoundDecorated]]
     CreateContext: typing.ClassVar[type[CreateContext]] = CreateContext
 
     @typing.overload
-    def __get__(
-        self: AsyncDecorated[Params, Return],
-        instance: Instance,
-        owner
-    ) -> AsyncBoundDecorated[Params, Return]: ...
-
-    @typing.overload
-    def __get__(
-        self: MultiDecorated[Params, Return],
-        instance: Instance,
-        owner
-    ) -> MultiBoundDecorated[Params, Return]: ...
-
-    @typing.overload
     async def __call__(
-        self: AsyncBoundDecorated[Params, Return],
+        self: AsyncDecorated[Params, Return],
         *args: Params.args,
         **kwargs: Params.kwargs,
     ) -> Return: ...
 
     @typing.overload
     def __call__(
-        self: MultiBoundDecorated[Params, Return],
+        self: MultiDecorated[Params, Return],
         *args: Params.args,
         **kwargs: Params.kwargs,
     ) -> Return: ...
 
     def __call__(self): ...
+    del __call__
+
+    @typing.overload
+    def __get__(
+        self: AsyncDecorated[Params, Return],
+        instance: Instance,
+        owner
+    ) -> AsyncDecorated[Params, Return] | Return: ...
+
+    @typing.overload
+    def __get__(
+        self: MultiDecorated[Params, Return],
+        instance: Instance,
+        owner
+    ) -> MultiDecorated[Params, Return] | Return: ...
 
     def __get__(self, instance, owner):
-        with self.lock:
-            return self.BoundDecorated[Params, Return](
+        with self.instance_lock:
+            return dataclasses.replace(
+                self,
                 create_contexts=tuple([
-                    create_context.__get__(instance, None) for create_context in self.create_contexts
+                    create_context.__get__(instance, owner) for create_context in self.create_contexts
                 ]),
-                decoratee=self.decoratee,
                 instance=instance,
-                register=self.register,
-                register_key=self.register_key,
-                __name__=self.__name__,
-                __qualname__=self.__qualname__,
             )
-
-    #@staticmethod
-    #def create_context(
-    #    create_context: MultiCreateContext[Params, Return],
-    #    args: Params.args,
-    #    kwargs: Params.kwargs,
-    #) -> AsyncBoundContext[Params, Return]:
-    #    return create_context(args=args, kwargs=kwargs)
 
     @staticmethod
     def norm_kwargs(kwargs: Params.kwargs) -> Params.kwargs:
         return dict(sorted(kwargs.items()))
 
-    @staticmethod
-    def norm_args(args: Params.args) -> Params.args:
-        return args
+    def norm_args(self, args: Params.args) -> Params.args:
+        return args if self.instance is ... else [self.instance, *args]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -296,7 +218,6 @@ class AsyncDecorated[** Params, Return](Decorated[Params, Return]):
     decoratee: AsyncDecoratee[Params, Return]
 
     _is_coroutine_marker: typing.ClassVar = inspect._is_coroutine_marker  # noqa
-    BoundDecorated: typing.ClassVar[type[AsyncBoundDecorated]]
     CreateContext: typing.ClassVar[type[AsyncCreateContext]] = AsyncCreateContext
 
     async def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return:
@@ -305,15 +226,11 @@ class AsyncDecorated[** Params, Return](Decorated[Params, Return]):
             contexts = []
 
             for create_context in self.create_contexts:
-                match create_context(args=args, kwargs=kwargs):
-                    case HerdFollower(future=future):
-                        return_ = await future
+                match await create_context(args=args, kwargs=kwargs):
+                    case AsyncContext() as context:
+                        contexts.append(await stack.enter_async_context(context))
+                    case return_:
                         break
-                    case ShortCircuit(value=return_):
-                        break
-                    case Context() as context:
-                        contexts.append(context)
-                        await stack.enter_async_context(context)
             else:
                 return_ = await self.decoratee(*args, **kwargs)
 
@@ -328,7 +245,6 @@ class MultiDecorated[** Params, Return](Decorated[Params, Return]):
     create_contexts: tuple[MultiCreateContext[Params, Return], ...] = ()
     decoratee: MultiDecoratee[Params, Return]
 
-    BoundDecorated: typing.ClassVar[type[MultiBoundDecorated]]
     CreateContext: typing.ClassVar[type[MultiCreateContext]] = MultiCreateContext
 
     def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> Return:
@@ -338,14 +254,10 @@ class MultiDecorated[** Params, Return](Decorated[Params, Return]):
 
             for create_context in self.create_contexts:
                 match create_context(args=args, kwargs=kwargs):
-                    case HerdFollower(future=future):
-                        return_ = concurrent.futures.wait(future)
+                    case MultiContext() as context:
+                        contexts.append(stack.enter_context(context))
+                    case return_:
                         break
-                    case ShortCircuit(value=return_):
-                        break
-                    case Context() as context:
-                        contexts.append(context)
-                        stack.enter_context(context)
             else:
                 return_ = self.decoratee(*args, **kwargs)
 
@@ -353,35 +265,6 @@ class MultiDecorated[** Params, Return](Decorated[Params, Return]):
                 context(return_=return_)
 
         return return_
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class BoundDecorated[** Params, Return](Decorated[Params, Return], abc.ABC):
-    instance: object
-
-    CreateContext: typing.ClassVar[type[BoundCreateContext]] = BoundCreateContext
-
-    def norm_args(self, args: Params.args) -> Params.args:
-        return tuple([self.instance, *args])
-
-
-Decorated.BoundDecorated = BoundDecorated
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncBoundDecorated[** Params, Return](AsyncDecorated[Params, Return], BoundDecorated[Params, Return], abc.ABC):
-    CreateContext: typing.ClassVar[type[AsyncBoundCreateContext]] = AsyncBoundCreateContext
-
-
-AsyncDecorated.BoundDecorated = AsyncBoundDecorated
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class MultiBoundDecorated[** Params, Return](MultiDecorated[Params, Return], BoundDecorated[Params, Return], abc.ABC):
-    CreateContext: typing.ClassVar[type[MultiBoundCreateContext]] = MultiBoundCreateContext
-
-
-MultiDecorated.BoundDecorated = MultiBoundDecorated
 
 
 @dataclasses.dataclass(frozen=True)

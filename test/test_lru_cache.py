@@ -6,7 +6,7 @@ import pytest
 
 import atools
 
-module = inspect.getmodule(atools.Throttle)
+module = inspect.getmodule(atools.LRUCache)
 
 # TODO: Multi tests are missing. This suite heavily relies upon determining whether coroutines are running vs suspended
 #  (via asyncio.eager_task_factory). Ideally, similar functionality exists for threading. Otherwise, we need to find a
@@ -263,7 +263,7 @@ async def test_herds_only_call_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_exceptions_are_saved() -> None:
+async def test_exceptions_are_not_saved() -> None:
     call_count = 0
 
     class FooException(Exception):
@@ -277,11 +277,8 @@ async def test_exceptions_are_saved() -> None:
 
     with pytest.raises(FooException):
         await foo()
-
-    with pytest.raises(FooException):
-        await foo()
-
-    with pytest.raises(FooException):
-        await foo()
-
     assert call_count == 1
+
+    with pytest.raises(FooException):
+        await foo()
+    assert call_count == 2

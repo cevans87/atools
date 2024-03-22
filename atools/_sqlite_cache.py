@@ -221,13 +221,16 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
 class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.ABC):
     """Serves as the db."""
     duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None
-    #engine: sqlalchemy.ext.asyncio.AsyncEngine | sqlalchemy.Engine
     keygen: Keygen[Params]
     lock: asyncio.Lock | threading.Lock
 
-    return_by_key: dict[Key, Context[Return] | Return] = dataclasses.field(default_factory=dict)
+    context_by_key: dict[Key, Context[Return]] = dataclasses.field(default_factory=dict)
+    context_by_key_by_instance: weakref.WeakKeyDictionary[
+        _base.Instance, dict[Key, Context[Return]]
+    ]
+    return_by_key: dict[Key, Return] = dataclasses.field(default_factory=dict)
     return_by_key_by_instance: weakref.WeakKeyDictionary[
-        _base.Instance, dict[Key, Context[Return] | Return]
+        _base.Instance, dict[Key, Return]
     ] = dataclasses.field(default_factory=weakref.WeakKeyDictionary)
 
     row_t: type[RowBase]
@@ -245,12 +248,14 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
         args: Params.args,
         kwargs: Params.kwargs,
     ) -> AsyncContext[Params, Return] | Return: ...
+
     @typing.overload
     def __call__(
         self: MultiCreateContext[Params, Return],
         args: Params.args,
         kwargs: Params.kwargs,
     ) -> MultiContext[Params, Return] | Return: ...
+
     def __call__(self, args, kwargs): ...
     del __call__
 
@@ -260,12 +265,14 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
         instance: _base.Instance,
         owner
     ) -> AsyncBoundCreateContext[Params, Return]: ...
+
     @typing.overload
     def __get__(
         self: MultiCreateContext[Params, Return],
         instance: _base.Instance,
         owner
     ) -> MultiBoundCreateContext[Params, Return]: ...
+
     def __get__(self, instance, owner):
         with self.lock:
             return self.BoundCreateContext[Params, Return](
@@ -279,63 +286,31 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base.AsyncCreateContext[Params, Return]):
-    engine: sqlalchemy.ext.asyncio.AsyncEngine
     lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
     session_maker: sqlalchemy.ext.asyncio.async_sessionmaker
 
     BoundCreateContext: typing.ClassVar[type[AsyncBoundCreateContext]]
     Context: typing.ClassVar[type[AsyncContext]] = AsyncContext
-    Session: typing.ClassVar[type[AsyncSession]] = AsyncSession
 
     async def __call__(self, args: Params.args, kwargs: Params.kwargs) -> AsyncContext[Params, Return] | Return:
         key = self.keygen(*args, **kwargs)
-
         async with self.lock:
-            while (context := self.return_by_key.get(key)) is not None:
-                match context:
-                    case AsyncContext(event=event):
-                        self.lock.release()
-                        try:
-                            await event.wait()
-                        finally:
-                            await self.lock.acquire()
-                    case return_:
-                        return return_
+            while (context := self.context_by_key.get(key)) is not None:
+                self.lock.release()
+                try:
+                    await context.event.wait()
+                finally:
+                    await self.lock.acquire()
 
-            session = self.session
+            if key in self.return_by_key:
+                return self.return_by_key[key]
 
-            sessionmaker = sqlalchemy.ext.asyncio.async_sessionmaker(self.engine)
-
-            context = self.Context(
-                session=
+            context = self.context_by_key[key] = AsyncContext[Params, Return](
+                session=self.session_maker.begin()
             )
+            #await session.execute(sqlalchemy.select(self.row_t).with_for_update().where(key=key))
 
-        connection = await sqlalchemy.ext.asyncio.AsyncConnection(self.engine)
-        transaction = await connection.begin()
-        try:
-            transaction.add()
-        finally:
-            await transaction.rollback()
-
-        async with sqlalchemy.ext.asyncio.AsyncSession(self.engine) as session, session.begin():
-            match (
-                await session.execute(sqlalchemy.select(self.memo_t).with_for_update().where(key=key))
-            ).first():
-                case self.memo_t(memo) if memo.value is None or (
-                    memo.expire is not None and memo.expire <= time.time()
-                ):
-                    ...
-                case self.memo_t(memo) if memo.expire is None or time.time() <= memo.expire:
-                    return self.serializer.loads(memo.value)
-                case _:
-                    ...
-
-        return self.Context(
-            memo=self.memo_t(key=self.key),
-            session=session,
-        )
-
-        print(result.fetchall())
+        return context
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -346,6 +321,26 @@ class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base
 
     BoundCreateContext: typing.ClassVar[type[MultiBoundCreateContext]]
     Context: typing.ClassVar[type[MultiContext]] = MultiContext
+
+    def __call__(self, args: Params.args, kwargs: Params.kwargs) -> MultiContext[Params, Return] | Return:
+        key = self.keygen(*args, **kwargs)
+        with self.lock:
+            while (context := self.context_by_key.get(key)) is not None:
+                self.lock.release()
+                try:
+                    context.event.wait()
+                finally:
+                    self.lock.acquire()
+
+            if key in self.return_by_key:
+                return self.return_by_key[key]
+
+            context = self.context_by_key[key] = MultiContext[Params, Return](
+                session=self.session_maker.begin()
+            )
+            #await session.execute(sqlalchemy.select(self.row_t).with_for_update().where(key=key))
+
+        return context
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
