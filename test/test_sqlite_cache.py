@@ -31,7 +31,7 @@ def event_loop() -> asyncio.AbstractEventLoop:
 async def test_async_zero_args() -> None:
     call_count = 0
 
-    @atools.SQLiteCache(url='//home/modulo/atools/scratch/test.sqlite')
+    @atools.SQLiteCache(db_path='/home/modulo/atools/scratch/test.sqlite')
     async def foo() -> None:
         nonlocal call_count
         call_count += 1
