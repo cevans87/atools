@@ -1,3 +1,4 @@
+aiosqlite
 pydantic
 pytest
 pytest-asyncio

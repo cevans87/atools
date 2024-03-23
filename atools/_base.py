@@ -267,9 +267,8 @@ class MultiDecorated[** Params, Return](Decorated[Params, Return]):
         return return_
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class Decorator[** Params, Return]:
-    name: Name = ...
     register: typing.ClassVar[Register] = Register()
 
     @typing.overload
@@ -279,10 +278,9 @@ class Decorator[** Params, Return]:
     def __call__(self, decoratee: MultiDecoratee[Params, Return], /) -> MultiDecorated[Params, Return]: ...
 
     def __call__(self, decoratee, /):
-        name = self.name if self.name is not ... else (
-            re.sub(r'.<.*>', '', '.'.join([decoratee.__module__, decoratee.__qualname__]))
-        )
-        register_key = Register.Key([*name.split('.')])
+        register_key = Register.Key([
+            *re.sub(r'.<.*>', '', '.'.join([decoratee.__module__, decoratee.__qualname__])).split('.')
+        ])
 
         for i in range(len(register_key)):
             self.register.links.setdefault(register_key[:i], set()).add(register_key[i])

@@ -25,6 +25,7 @@ class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
     type event_t = asyncio.Event | threading.Event
     type lock_t = asyncio.Lock | threading.Lock
 
+    # FIXME: are args and kwargs used for anything?
     args: Params.args
     context_by_key: dict[Key, context_t[Params, Return]]
     event: event_t
@@ -38,10 +39,13 @@ class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContext[Params, Return]):
+    type context_t[** Params, Return] = AsyncContext[Params, Return]
     event_t: typing.ClassVar[type[asyncio.Event]] = asyncio.Event
     lock_t: typing.ClassVar[type[asyncio.Lock]] = asyncio.Lock
 
+    context_by_key: dict[Key, context_t[Params, Return]]
     event: event_t = dataclasses.field(default_factory=event_t)
+    lock: lock_t
 
     async def __call__(self, return_: Return) -> None:
         async with self.lock:
@@ -65,12 +69,13 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContext[Params, Return]):
-    context_t: typing.ClassVar[type[AsyncContext]] = AsyncContext
+    type context_t[** Params, Return] = MultiContext[Params, Return]
     event_t: typing.ClassVar[type[threading.Event]] = threading.Event
     lock_t: typing.ClassVar[type[asyncio.Lock]] = asyncio.Lock
 
     context_by_key: dict[Key, context_t[Params, Return]]
     event: event_t = dataclasses.field(default_factory=event_t)
+    lock: lock_t
 
     def __call__(self, return_: Return) -> None:
         with self.lock:
@@ -194,10 +199,8 @@ class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base
         return context
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class Decorator[** Params, Return]:
-    name: _base.Name = ...
-    _: dataclasses.KW_ONLY = ...
     keygen: Keygen[Params] = ...
     size: int = sys.maxsize
 
@@ -213,7 +216,7 @@ class Decorator[** Params, Return]:
 
     def __call__(self, decoratee, /):
         if not isinstance(decoratee, _base.Decorated):
-            decoratee = _base.Decorator[Params, Return](name=self.name)(decoratee)
+            decoratee = _base.Decorator[Params, Return]()(decoratee)
 
         signature = inspect.signature(decoratee.decoratee)
         if (keygen := self.keygen) is ...:

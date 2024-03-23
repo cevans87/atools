@@ -4,19 +4,18 @@ import abc
 import annotated_types
 import asyncio
 import collections
-import concurrent.futures
 import dataclasses
-import hashlib
 import inspect
 import json
 import sys
-import time
 import threading
 import types
 import typing
 import weakref
 
-import pydantic
+import aiosqlite
+import sqlite3
+
 import sqlalchemy
 import sqlalchemy.dialects.sqlite
 import sqlalchemy.ext.asyncio
@@ -27,7 +26,7 @@ from . import _base
 
 type Duration = float
 type Expire = float
-type Key = str
+type Key = typing.Hashable
 type Keygen[** Params] = typing.Callable[Params, Key]
 type Value = object
 
@@ -44,134 +43,61 @@ class Serializer[Return](typing.Protocol):
 
 
 class Base(sqlalchemy.orm.DeclarativeBase):
-    ...
+    __tablename__ = ''
+    id: sqlalchemy.orm.Mapped[int] = sqlalchemy.orm.mapped_column(autoincrement=True, primary_key=True)
+    key: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(index=True, unique=True)
+    value: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column()
+
+    @classmethod
+    @sqlalchemy.orm.declared_attr
+    def __tablename__(cls) -> str:
+        return cls.__name__
 
 
-class RowBase(Base):
-    expire: sqlalchemy.orm.Mapped[Expire | None] = sqlalchemy.orm.mapped_column()
-    key: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(primary_key=True, unique=True)
-    value: sqlalchemy.orm.Mapped[bytes] = sqlalchemy.orm.mapped_column()
-
-
-class Session[Return](abc.ABC):
-
-    def add(self, return_: Return) -> None:
-        ...
-
-    @typing.overload
-    async def commit(self) -> None: ...
-    @typing.overload
-    def commit(self) -> None: ...
-    def commit(self): ...
-    del commit
-
-    @typing.overload
-    async def rollback(self: AsyncSession[Return]) -> None: ...
-    @typing.overload
-    def rollback(self: MultiSession[Return]) -> None: ...
-    def rollback(self): ...
-    del rollback
-
-
-class AsyncSession[Return]:
-
-    def add(self, return_: Return):
-        ...
-
-    async def commit(self):
-        ...
-
-    async def rollback(self):
-        ...
-
-
-class MultiSession[Return]:
-
-    def add(self, return_: Return):
-        ...
-
-    def commit(self):
-        ...
-
-    def rollback(self):
-        ...
-
-
-#class Future[Return]:
-#    ...
+#class RowBase(Base):
+#    __tablename__ = ''
+#    id: sqlalchemy.orm.Mapped[int] = sqlalchemy.orm.mapped_column(autoincrement=True, primary_key=True)
+#    key: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(index=True, unique=True)
+#    value: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column()
 #
-#
-#class AsyncFuture[Return](Future[Return]):
-#    ...
-#
-#
-#class MultiFuture[Return](Future[Return]):
-#    ...
-
-
-#@dataclasses.dataclass(frozen=True, kw_only=True)
-#class Cache[Key, Return]:
-#    duration: Duration
-#    engine: sqlalchemy.Engine = dataclasses.field(init=True)
-#    size: int
-#
-#    def __len__(self) -> int:
-#        ...
-#
-#    async def get(self, key: Key) -> Return | AsyncFuture[Return]:
-#        with sqlalchemy.orm.Session(self.engine) as session:
-#            session.begin()
-#
-#    def set(self, key: Key, memo: Memo) -> None:
-#        ...
-
-
-#@dataclasses.dataclass(frozen=True, kw_only=True)
-#class Memo(abc.ABC):
-#    expire: Expire | None
-
-
-#@dataclasses.dataclass(frozen=True, kw_only=True)
-#class Pending[Return](Memo, abc.ABC):
-#    future: asyncio.Future[Return] | concurrent.futures.Future[Return]
-#
-#
-#@dataclasses.dataclass(frozen=True, kw_only=True)
-#class AsyncPending[Return](Pending[Return]):
-#    session: sqlalchemy.ext.asyncio.AsyncSession
-#
-#
-#@dataclasses.dataclass(frozen=True, kw_only=True)
-#class MultiPending[Return](Pending):
-#    session: sqlalchemy.orm.Session
-
-
-#@dataclasses.dataclass(frozen=True, kw_only=True)
-#class Returned[Return](Memo, Exception):
-#    value: Return
+#    @classmethod
+#    @sqlalchemy.orm.declared_attr
+#    def __tablename__(cls) -> str:
+#        return cls.__name__
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
-    event: asyncio.Event | threading.Event
-    memo: RowBase
-    session: Session[Return]
-    #session: sqlalchemy.ext.asyncio.AsyncSession | sqlalchemy.orm.Session
+    type context_t[** Params, Return] = type[AsyncContext[Params, Return]] | type[MultiContext[Params, Return]]
+    type event_t = asyncio.Event | threading.Event
+    type lock_t = asyncio.Lock | threading.Lock
+    type session_t = sqlalchemy.ext.asyncio.AsyncSession | sqlalchemy.orm.Session
+
+    context_by_key: dict[Key, context_t[Params, Return]]
+    event: event_t
+    key: Key
+    lock: lock_t
+    row_t: type[Base]
+    serializer: Serializer
+    session: session_t
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContext[Params, Return]):
-    event: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+    event_t: typing.ClassVar[type[asyncio.Event]] = asyncio.Event
+    lock_t: typing.ClassVar[type[asyncio.Lock]] = asyncio.Lock
+
+    event: event_t = dataclasses.field(default_factory=event_t)
     session: sqlalchemy.ext.asyncio.AsyncSession
 
     async def __call__(self, return_: Return) -> None:
-        self.memo.value = return_
-        self.session.add(self.memo)
+        self.session.add(self.row_t(
+            key=json.dumps({'key': self.key}),
+            value=json.dumps({'return_': return_}))
+        )
 
     async def __aenter__(self) -> typing.Self:
-        # Session should have already been started.
-        # TODO lock the row
-        #await self.session.begin()
+        await self.session.__aenter__()
         return self
 
     @typing.overload
@@ -185,8 +111,9 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if (exc_type, exc_val, exc_tb) == (None, None, None):
             await self.session.rollback()
-        else:
-            await self.session.commit()
+        await self.session.__aexit__(exc_type, exc_val, exc_tb)
+        async with self.lock:
+            self.context_by_key.pop(self.key)
         self.event.set()
 
 
@@ -195,8 +122,10 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
     session: sqlalchemy.orm.Session
 
     def __call__(self, return_: Return) -> None:
-        self.memo.value = return_
-        self.session.add(self.memo)
+        self.session.add(self.row_t(
+            key=json.dumps({'key': self.key}),
+            value=json.dumps({'return_': return_}))
+        )
 
     def __enter__(self) -> typing.Self:
         self.session.begin()
@@ -212,35 +141,29 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if (exc_type, exc_val, exc_tb) == (None, None, None):
-            self.session.commit()
-        else:
             self.session.rollback()
+        self.session.__exit__(exc_type, exc_val, exc_tb)
+        with self.lock:
+            self.context_by_key.pop(self.key)
+        self.event.set()
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.ABC):
-    """Serves as the db."""
+    type context_t[** Params, Return] = AsyncContext[Params, Return] | MultiContext[Params, Return]
+    type engine_t = sqlalchemy.ext.asyncio.AsyncEngine | sqlalchemy.Engine
+
+    context_by_key: dict[Key, context_t[Params, Return]]
+    context_by_key_by_instance: weakref.WeakKeyDictionary[_base.Instance, dict[Key, context_t[Params, Return]]]
+    engine: engine_t
     duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None
     keygen: Keygen[Params]
     lock: asyncio.Lock | threading.Lock
-
-    context_by_key: dict[Key, Context[Return]] = dataclasses.field(default_factory=dict)
-    context_by_key_by_instance: weakref.WeakKeyDictionary[
-        _base.Instance, dict[Key, Context[Return]]
-    ]
-    return_by_key: dict[Key, Return] = dataclasses.field(default_factory=dict)
-    return_by_key_by_instance: weakref.WeakKeyDictionary[
-        _base.Instance, dict[Key, Return]
-    ] = dataclasses.field(default_factory=weakref.WeakKeyDictionary)
-
-    row_t: type[RowBase]
+    row_t: type[Base]
     serializer: Serializer
     session_maker: sqlalchemy.orm.sessionmaker | sqlalchemy.ext.asyncio.async_sessionmaker
     signature: inspect.signature
     size: int
-
-    BoundCreateContext: typing.ClassVar[type[BoundCreateContext]]
-    Context: typing.ClassVar[type[Context]] = Context
 
     @typing.overload
     async def __call__(
@@ -264,35 +187,39 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
         self: AsyncCreateContext[Params, Return],
         instance: _base.Instance,
         owner
-    ) -> AsyncBoundCreateContext[Params, Return]: ...
+    ) -> AsyncCreateContext[Params, Return]: ...
 
     @typing.overload
     def __get__(
         self: MultiCreateContext[Params, Return],
         instance: _base.Instance,
         owner
-    ) -> MultiBoundCreateContext[Params, Return]: ...
+    ) -> MultiCreateContext[Params, Return]: ...
 
     def __get__(self, instance, owner):
         with self.lock:
-            return self.BoundCreateContext[Params, Return](
-                duration=self.duration,
-                keygen=self.keygen,
-                row_t=type('row', (RowBase,), {'__tablename__': f'{self.row_t.__tablename__}__{instance}'}),
-                signature=self.signature,
-                size=self.size,
+            return dataclasses.replace(
+                self,
+                instance=instance,
+                context_by_key=self.context_by_key_by_instance.setdefault(instance, collections.OrderedDict()),
+                row_t=type[Base]('row', (Base,), {'__tablename__': f'{self.row_t.__tablename__}__{instance}'}),
             )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base.AsyncCreateContext[Params, Return]):
+    context_t: typing.ClassVar[type[AsyncContext]] = AsyncContext
+    engine_t: typing.ClassVar[type[sqlalchemy.ext.asyncio.AsyncEngine]] = sqlalchemy.ext.asyncio.AsyncEngine
+
+    engine: engine_t
+    context_by_key: dict[Key, context_t[Params, Return]] = dataclasses.field(default_factory=dict)
+    context_by_key_by_instance: weakref.WeakKeyDictionary[
+        _base.Instance, dict[Key, context_t[Params, Return]]
+    ] = dataclasses.field(default_factory=weakref.WeakKeyDictionary)
     lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
     session_maker: sqlalchemy.ext.asyncio.async_sessionmaker
 
-    BoundCreateContext: typing.ClassVar[type[AsyncBoundCreateContext]]
-    Context: typing.ClassVar[type[AsyncContext]] = AsyncContext
-
-    async def __call__(self, args: Params.args, kwargs: Params.kwargs) -> AsyncContext[Params, Return] | Return:
+    async def __call__(self, args: Params.args, kwargs: Params.kwargs) -> context_t[Params, Return] | Return:
         key = self.keygen(*args, **kwargs)
         async with self.lock:
             while (context := self.context_by_key.get(key)) is not None:
@@ -302,27 +229,35 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
                 finally:
                     await self.lock.acquire()
 
-            if key in self.return_by_key:
-                return self.return_by_key[key]
+            async with self.session_maker.begin() as session:
+                session.add(sqlalchemy.schema.CreateTable(self.row_t.metadata.schema, if_not_exists=True))
+                self.row_t.metadata.create_all(session)
+                #session.add(sqlalchemy.schema.CreateTable(sqlalchemy.inspect(self.row_t).local_table))
+                if (row := (await session.execute(
+                    sqlalchemy.select(self.row_t).where(self.row_t.key == json.dumps({'key': key}))
+                )).one_or_none()) is not None:
+                    return json.loads(row.value)['return_']
 
-            context = self.context_by_key[key] = AsyncContext[Params, Return](
+            context = self.context_by_key[key] = self.context_t[Params, Return](
                 session=self.session_maker.begin()
             )
-            #await session.execute(sqlalchemy.select(self.row_t).with_for_update().where(key=key))
 
         return context
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base.MultiCreateContext[Params, Return]):
-    engine: sqlalchemy.Engine
+    context_t: typing.ClassVar[type[MultiContext]] = MultiContext
+    engine_t: sqlalchemy.Engine
+
+    engine: engine_t
+    context_by_key_by_instance: weakref.WeakKeyDictionary[
+        _base.Instance, dict[Key, context_t[Params, Return]]
+    ] = dataclasses.field(default_factory=weakref.WeakKeyDictionary)
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     session_maker: sqlalchemy.orm.sessionmaker
 
-    BoundCreateContext: typing.ClassVar[type[MultiBoundCreateContext]]
-    Context: typing.ClassVar[type[MultiContext]] = MultiContext
-
-    def __call__(self, args: Params.args, kwargs: Params.kwargs) -> MultiContext[Params, Return] | Return:
+    def __call__(self, args: Params.args, kwargs: Params.kwargs) -> context_t[Params, Return] | Return:
         key = self.keygen(*args, **kwargs)
         with self.lock:
             while (context := self.context_by_key.get(key)) is not None:
@@ -332,62 +267,26 @@ class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base
                 finally:
                     self.lock.acquire()
 
-            if key in self.return_by_key:
-                return self.return_by_key[key]
+            with self.session_maker.begin() as session:
+                if (row := session.execute(
+                    sqlalchemy.select(self.row_t).where(self.row_t.key == json.dumps({'key': key}))
+                ).one_or_none()) is not None:
+                    return json.loads(row.value)['return_']
 
-            context = self.context_by_key[key] = MultiContext[Params, Return](
+            context = self.context_by_key[key] = self.context_t[Params, Return](
                 session=self.session_maker.begin()
             )
-            #await session.execute(sqlalchemy.select(self.row_t).with_for_update().where(key=key))
 
         return context
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class BoundCreateContext[** Params, Return](
-    CreateContext[Params, Return], _base.BoundCreateContext[Params, Return], abc.ABC
-):
-    ...
-
-
-CreateContext.BoundCreateContext = BoundCreateContext
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class AsyncBoundCreateContext[** Params, Return](
-    BoundCreateContext[Params, Return],
-    AsyncCreateContext[Params, Return],
-    _base.AsyncBoundCreateContext[Params, Return],
-    abc.ABC,
-):
-    ...
-
-
-AsyncCreateContext.BoundCreateContext = AsyncBoundCreateContext
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class MultiBoundCreateContext[** Params, Return](
-    BoundCreateContext[Params, Return],
-    MultiCreateContext[Params, Return],
-    _base.MultiBoundCreateContext[Params, Return],
-    abc.ABC
-):
-    ...
-
-
-MultiCreateContext.BoundCreateContext = MultiBoundCreateContext
-
-
-@dataclasses.dataclass(frozen=True)
 class Decorator[** Params, Return]:
-    name: _base.Name = ...
-    _: dataclasses.KW_ONLY = ...
     duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None = None
     keygen: Keygen[Params] = ...
     serializer: Serializer = ...
     size: int = sys.maxsize
-    url: str = ':memory:'
+    url: str = ''
 
     @typing.overload
     def __call__(
@@ -401,7 +300,7 @@ class Decorator[** Params, Return]:
 
     def __call__(self, decoratee, /):
         if not isinstance(decoratee, _base.Decorated):
-            decoratee = _base.Decorator[Params, Return](name=self.name)(decoratee)
+            decoratee = _base.Decorator[Params, Return]()(decoratee)
 
         signature = inspect.signature(decoratee.decoratee)
         if (keygen := self.keygen) is ...:
@@ -411,26 +310,22 @@ class Decorator[** Params, Return]:
 
                 return bound.args, tuple(sorted(bound.kwargs))
 
-        url = f'sqlite://{self.url}'
-
         match decoratee:
             case _base.AsyncDecorated():
                 create_context_t = AsyncCreateContext
-                engine = sqlalchemy.ext.asyncio.create_async_engine(url)
-                session_maker = sqlalchemy.ext.asyncio.async_sessionmaker(
-                    sqlalchemy.ext.asyncio.create_async_engine(url)
-                )
+                engine = sqlalchemy.ext.asyncio.create_async_engine(f'sqlite+aiosqlite://{self.url}', echo=True)
+                session_maker = sqlalchemy.ext.asyncio.async_sessionmaker(engine)
             case _base.MultiDecorated():
                 create_context_t = MultiCreateContext
-                session_maker = sqlalchemy.orm.sessionmaker(
-                    sqlalchemy.create_engine(url)
-                )
+                engine = sqlalchemy.create_engine(f'sqlite://{self.url}', echo=True)
+                session_maker = sqlalchemy.orm.sessionmaker(engine)
             case _: assert False, 'Unreachable'
 
         create_context: CreateContext[Params, Return] = create_context_t(
             duration=self.duration,
+            engine=engine,
             keygen=keygen,
-            row_t=type[RowBase]('Row', (RowBase,), {'__tablename__': self.name.replace('.', '__')}),
+            row_t=type[Base]('Row', (Base,), {'__tablename__': '__'.join(decoratee.register_key)}),
             serializer=self.serializer,
             session_maker=session_maker,
             signature=signature,

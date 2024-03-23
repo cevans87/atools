@@ -14,7 +14,8 @@ setup(
     extras_require={
         'base': (base := ['pydantic']),
         'sql_cache': (sql_cache := base + ['sqlalchemy']),
-        'requirements': (requirements := base + sql_cache),
+        'sqlite_cache': (sqlite_cache := sql_cache + ['aiosqlite']),
+        'requirements': (requirements := base + sql_cache + sqlite_cache),
         'test': (test := requirements + ['pytest', 'pytest-asyncio', 'pytest-cov']),
     },
     install_requires=base,
