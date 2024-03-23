@@ -1,6 +1,6 @@
 import asyncio
 import inspect
-import unittest.mock
+import tempfile
 
 import pytest
 
@@ -27,11 +27,17 @@ def event_loop() -> asyncio.AbstractEventLoop:
     eager_loop.close()
 
 
+@pytest.fixture
+def db_path() -> str:
+    with tempfile.NamedTemporaryFile() as f:
+        yield f.name
+
+
 @pytest.mark.asyncio
-async def test_async_zero_args() -> None:
+async def test_async_zero_args(db_path: str) -> None:
     call_count = 0
 
-    @atools.SQLiteCache(db_path='/home/modulo/atools/scratch/test.sqlite')
+    @atools.SQLiteCache(db_path=db_path)
     async def foo() -> None:
         nonlocal call_count
         call_count += 1
@@ -43,10 +49,10 @@ async def test_async_zero_args() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('arg', [None, 1, 'foo', 0.0])
-async def test_async_primitive_arg(arg) -> None:
+async def test_async_primitive_arg(db_path, arg) -> None:
     call_count = 0
 
-    @atools.SQLiteCache()
+    @atools.SQLiteCache(db_path=db_path)
     async def foo(_) -> None:
         nonlocal call_count
         call_count += 1
@@ -61,7 +67,7 @@ async def test_method() -> None:
     call_count = 0
 
     class Foo:
-        @atools.SQLiteCache()
+        @atools.SQLiteCache(db_path='/home/modulo/atools/scratch/test.sqlite')
         async def foo(self) -> None:
             nonlocal call_count
             call_count += 1

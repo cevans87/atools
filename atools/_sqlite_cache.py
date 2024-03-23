@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import abc
-import ast
 import annotated_types
+import ast
 import asyncio
 import collections
 import dataclasses
 import inspect
-import json
+import pathlib
 import sys
 import textwrap
 import threading
@@ -27,16 +27,9 @@ type Key = typing.Hashable
 type Keygen[** Params] = typing.Callable[Params, Key]
 type Value = object
 
-type Bytes = bytes
-
-
-@typing.runtime_checkable
-class Serializer[Return](typing.Protocol):
-    def dumps(self, return_: Return) -> Bytes:
-        ...
-
-    def loads(self, bytes_: Bytes) -> Return:
-        ...
+type DeserializeValue[Return] = typing.Callable[[bytes], Return]
+type SerializeKey[** Params] = typing.Callable[Params, bytes]
+type SerializeValue[Return] = typing.Callable[[Return], bytes]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -51,7 +44,8 @@ class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
     event: event_t
     key: Key
     lock: lock_t
-    serializer: Serializer
+    serialize_key: SerializeKey[Params]
+    serialize_value: SerializeValue[Return]
     table_name: str
 
 
@@ -68,11 +62,10 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
     async def __call__(self, return_: Return) -> None:
         await self.connection.execute(
             f'''INSERT OR REPLACE INTO `{self.table_name}` (key, value) VALUES (?, ?)''',
-            (repr(self.key), repr(return_))
+            (self.serialize_key(self.key), self.serialize_value(return_))
         )
 
     async def __aenter__(self) -> typing.Self:
-        #await self.connection.execute('BEGIN TRANSACTION')
         return self
 
     @typing.overload
@@ -84,11 +77,7 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
     async def __aexit__(self, exc_type: None, exc_val: None, exc_tb: None) -> None: ...
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        #if (exc_type, exc_val, exc_tb) == (None, None, None):
-            #await self.connection.execute('ROLLBACK')
-        #else:
-            #await self.connection.execute('COMMIT')
-        self.connection.close()
+        await self.connection.close()
         async with self.lock:
             self.context_by_key.pop(self.key)
         self.event.set()
@@ -129,23 +118,26 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
     context_by_key: dict[Key, context_t[Params, Return]]
     context_by_key_by_instance: weakref.WeakKeyDictionary[_base.Instance, dict[Key, context_t[Params, Return]]]
     db_path: str
+    deserialize_value: DeserializeValue[Return]
     keygen: Keygen[Params]
     lock: asyncio.Lock | threading.Lock
-    serializer: Serializer
+    serialize_key: SerializeKey[Params]
+    serialize_value: SerializeValue[Return]
     size: int
     table_name: str
 
     def __post_init__(self) -> None:
         with sqlite3.connect(self.db_path, isolation_level=None) as connection:
-            connection.execute(
-                textwrap.dedent(f'''
-                    CREATE TABLE IF NOT EXISTS `{self.table_name}` (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        key STRING NOT NULL,
-                        VALUE STRING NOT NULL
-                    )
-                '''),
-            )
+            connection.execute(textwrap.dedent(f'''
+                CREATE TABLE IF NOT EXISTS `{self.table_name}` (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key STRING NOT NULL UNIQUE,
+                    VALUE STRING NOT NULL
+                )
+            '''))
+            connection.execute(textwrap.dedent(f'''
+                CREATE INDEX IF NOT EXISTS key_index ON `{self.table_name}` (value)
+            '''))
 
     @typing.overload
     async def __call__(
@@ -179,7 +171,7 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
     ) -> MultiCreateContext[Params, Return]: ...
 
     def __get__(self, instance, owner):
-        with self.lock:
+        with self.instance_lock:
             return dataclasses.replace(
                 self,
                 instance=instance,
@@ -221,7 +213,8 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
                 context_by_key=self.context_by_key,
                 key=key,
                 lock=self.lock,
-                serializer=self.serializer,
+                serialize_key=self.serialize_key,
+                serialize_value=self.serialize_value,
                 table_name=self.table_name,
             )
 
@@ -244,10 +237,12 @@ class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Decorator[** Params, Return]:
-    db_path: str = ':memory:'
+    db_path: pathlib.Path | str = 'file::memory:?cache=shared'
+    deserialize_value: DeserializeValue[Return] = ast.literal_eval
     duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None = None
     keygen: Keygen[Params] = ...
-    serializer: Serializer = ...
+    serialize_key: SerializeKey[Params] = repr
+    serialize_value: SerializeValue[Return] = repr
     size: int = sys.maxsize
 
     @typing.overload
@@ -281,8 +276,10 @@ class Decorator[** Params, Return]:
 
         create_context: CreateContext[Params, Return] = create_context_t(
             db_path=self.db_path,
+            deserialize_value=self.deserialize_value,
             keygen=keygen,
-            serializer=self.serializer,
+            serialize_key=self.serialize_key,
+            serialize_value=self.serialize_value,
             size=self.size,
             table_name='__'.join(decoratee.register_key),
         )
