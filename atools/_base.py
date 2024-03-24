@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import abc
-import asyncio
 import builtins
-import concurrent.futures
 import contextlib
 import dataclasses
 import inspect
@@ -11,7 +9,7 @@ import re
 import threading
 import types
 import typing
-
+import weakref
 
 type Instance = object
 type Name = typing.Annotated[str, annotated_types.Predicate(str.isidentifier)]  # noqa
@@ -100,6 +98,9 @@ class MultiContext[** Params, Return](Context[Params, Return], abc.ABC):
 class CreateContext[** Params, Return](abc.ABC):
     Context: typing.ClassVar[type[Context]] = Context
 
+    create_context_by_instance: weakref.WeakKeyDictionary[Instance, CreateContext] = dataclasses.field(
+        default_factory=weakref.WeakKeyDictionary
+    )
     instance: Instance = ...
     instance_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
@@ -301,7 +302,3 @@ class Decorator[** Params, Return]:
         decorated.register.decoratees[decorated.register_key] = decorated
 
         return decorated
-
-    @property
-    def register_key(self) -> Register.Key:
-        return Register.Key([] if self.name is ... else [*re.sub(r'.<.*>', '', self.name).split('.')])

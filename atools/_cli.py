@@ -444,7 +444,7 @@ class MultiDecorated[** Params, Return](Decorated[Params, Return], _base.MultiDe
     ...
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class Decorator[** Params, Return]:
     """Decorate a function, adding `.cli` attribute.
 
@@ -485,18 +485,19 @@ class Decorator[** Params, Return]:
             generated for each submodule top-level function with name matching decorated entrypoint name.
     """
 
-    name: _base.Name = ...
-    _: dataclasses.KW_ONLY = ...
-
     AddArgument: typing.ClassVar = _AddArgument
     Annotated: typing.ClassVar = _Annotated
     Exception: typing.ClassVar = _Exception
 
-    def __call__(self, decoratee: _base.Decoratee[Params, Return], /) -> Decorated[Params, Return]:
-        if isinstance(decoratee, _base.Decorated):
-            decoratee: _base.Decorated[Params, Return] = decoratee
-        else:
-            decoratee = _base.Decorator[Params, Return](name=self.name)(decoratee)
+    @typing.overload
+    def __call__(self, decoratee: _base.AsyncDecoratee[Params, Return], /) -> AsyncDecorated[Params, Return]: ...
+
+    @typing.overload
+    def __call__(self, decoratee: _base.MultiDecoratee[Params, Return], /) -> MultiDecorated[Params, Return]: ...
+
+    def __call__(self, decoratee, /):
+        if not isinstance(decoratee, _base.Decorated):
+            decoratee = _base.Decorator[Params, Return]()(decoratee)
 
         signature = inspect.signature(decoratee.decoratee)
         cli = CLI(
@@ -517,24 +518,20 @@ class Decorator[** Params, Return]:
             ))
             cli.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
 
-        if inspect.iscoroutinefunction(decoratee.decoratee):
-            decoratee: _base.AsyncDecorated[Params, Return]
-            decorated = AsyncDecorated[Params, Return](
-                cli=cli,
-                create_contexts=decoratee.create_contexts,
-                decoratee=decoratee.decoratee,
-                register=decoratee.register,
-                register_key=decoratee.register_key,
-            )
-        else:
-            decoratee: _base.MultiDecorated[Params, Return]
-            decorated = MultiDecorated[Params, Return](
-                cli=cli,
-                create_contexts=decoratee.create_contexts,
-                decoratee=decoratee.decoratee,
-                register=decoratee.register,
-                register_key=decoratee.register_key,
-            )
+        match decoratee:
+            case _base.AsyncDecorated():
+                decorated_t = AsyncDecorated
+            case _base.MultiDecorated():
+                decorated_t = MultiDecorated
+            case _: assert False, 'Unreachable'  # pragma: no cover
+
+        decorated: Decorated[Params, Return] = decorated_t(
+            cli=cli,
+            create_contexts=decoratee.create_contexts,
+            decoratee=decoratee.decoratee,
+            register=decoratee.register,
+            register_key=decoratee.register_key,
+        )
 
         decorated.register.decoratees[decorated.register_key] = decorated
 
@@ -546,7 +543,7 @@ class Decorator[** Params, Return]:
 
     @property
     def decorated(self) -> Decorated:
-        decorator = _base.Decorator[Params, Return](name=self.name)
+        decorator = _base.Decorator[Params, Return]()
         register = decorator.register
         key = decorator.register_key
 
@@ -559,16 +556,20 @@ class Decorator[** Params, Return]:
             #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
             decorated.__annotations__['subcommand'] = eval(decorated.__annotations__['subcommand'], None, locals())
 
-            decorated = Decorator(str(key))(decorated)
+            decorated = Decorator()(decorated)
 
         return decorated
 
+    @classmethod
+    def get(cls, name: str) -> Decorated[Params, Return] | None:
+
+
     def run(self, args: typing.Sequence[str] = ...) -> object:
         args = sys.argv[1:] if args is ... else args
-        register = _base.Decorator[Params, Return](name=self.name).register
-        key = _base.Decorator(name=self.name).register_key
+        register = _base.Decorator[Params, Return]().register
+        key = _base.Decorator().register_key
 
         while args and (_base.Register.Key([*key, args[0]]) in register.links):
             key = _base.Register.Key([*key, args.pop(0)])
 
-        return Decorator(str(key)).decorated(args)
+        return Decorator().decorated(args)

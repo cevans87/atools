@@ -231,13 +231,12 @@ def test_bad_arg_does_not_parse(arg: Arg) -> None:
 
 
 def test_execute_hidden_subcommand_works() -> None:
-    prefix = test_execute_hidden_subcommand_works.__name__
 
-    @atools.CLI(f'{prefix}._foo')
+    @atools.CLI()
     def _foo(foo: str) -> dict[str, str]:
         return locals()
 
-    assert '_foo' not in atools.CLI(prefix).cli.format_help()
+    assert '_foo' not in atools.CLI().cli().format_help()
     assert atools.CLI(prefix).run(shlex.split('_foo hidden_subcommand_works')) == {'foo': 'hidden_subcommand_works'}
 
 

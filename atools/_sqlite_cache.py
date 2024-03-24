@@ -8,12 +8,10 @@ import collections
 import dataclasses
 import inspect
 import pathlib
-import sys
 import textwrap
 import threading
 import types
 import typing
-import weakref
 
 import aiosqlite
 import sqlite3
@@ -21,14 +19,11 @@ import sqlite3
 from . import _base
 
 
-type Duration = float
-type Expire = float
 type Key = typing.Hashable
 type Keygen[** Params] = typing.Callable[Params, Key]
-type Value = object
 
 type DeserializeValue[Return] = typing.Callable[[bytes], Return]
-type SerializeKey[** Params] = typing.Callable[Params, bytes]
+type SerializeKey = typing.Callable[[Key], bytes]
 type SerializeValue[Return] = typing.Callable[[Return], bytes]
 
 
@@ -44,7 +39,7 @@ class Context[** Params, Return](_base.Context[Params, Return], abc.ABC):
     event: event_t
     key: Key
     lock: lock_t
-    serialize_key: SerializeKey[Params]
+    serialized_key: bytes
     serialize_value: SerializeValue[Return]
     table_name: str
 
@@ -61,8 +56,8 @@ class AsyncContext[** Params, Return](Context[Params, Return], _base.AsyncContex
 
     async def __call__(self, return_: Return) -> None:
         await self.connection.execute(
-            f'''INSERT OR REPLACE INTO `{self.table_name}` (key, value) VALUES (?, ?)''',
-            (self.serialize_key(self.key), self.serialize_value(return_))
+            f'''INSERT INTO `{self.table_name}` (key, value) VALUES (?, ?)''',
+            (self.serialized_key, self.serialize_value(return_))
         )
 
     async def __aenter__(self) -> typing.Self:
@@ -93,10 +88,12 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
     event: event_t = dataclasses.field(default_factory=event_t)
 
     def __call__(self, return_: Return) -> None:
-        ...
+        self.connection.execute(
+            f'''INSERT INTO `{self.table_name}` (key, value) VALUES (?, ?)''',
+            (self.serialized_key, self.serialize_value(return_))
+        )
 
     def __enter__(self) -> typing.Self:
-        ...
         return self
 
     @typing.overload
@@ -108,36 +105,36 @@ class MultiContext[** Params, Return](Context[Params, Return], _base.MultiContex
     def __exit__(self, exc_type: None, exc_val: None, exc_tb: None) -> None: ...
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        ...
+        self.connection.close()
+        with self.lock:
+            self.context_by_key.pop(self.key)
+        self.event.set()
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.ABC):
     type context_t[** Params, Return] = AsyncContext[Params, Return] | MultiContext[Params, Return]
+    type create_table_event_t = asyncio.Event | threading.Event
 
+    connection: sqlite3.Connection
     context_by_key: dict[Key, context_t[Params, Return]]
-    context_by_key_by_instance: weakref.WeakKeyDictionary[_base.Instance, dict[Key, context_t[Params, Return]]]
+    create_table_event: create_table_event_t
     db_path: str
     deserialize_value: DeserializeValue[Return]
     keygen: Keygen[Params]
     lock: asyncio.Lock | threading.Lock
-    serialize_key: SerializeKey[Params]
+    serialize_key: SerializeKey
     serialize_value: SerializeValue[Return]
-    size: int
     table_name: str
 
-    def __post_init__(self) -> None:
-        with sqlite3.connect(self.db_path, isolation_level=None) as connection:
-            connection.execute(textwrap.dedent(f'''
-                CREATE TABLE IF NOT EXISTS `{self.table_name}` (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key STRING NOT NULL UNIQUE,
-                    VALUE STRING NOT NULL
-                )
-            '''))
-            connection.execute(textwrap.dedent(f'''
-                CREATE INDEX IF NOT EXISTS key_index ON `{self.table_name}` (value)
-            '''))
+    @property
+    def create_table_text(self) -> str:
+        return textwrap.dedent(f'''
+            CREATE TABLE IF NOT EXISTS `{self.table_name}` (
+                key STRING PRIMARY KEY NOT NULL UNIQUE,
+                value STRING NOT NULL
+            )
+        ''').strip()
 
     @typing.overload
     async def __call__(
@@ -172,26 +169,29 @@ class CreateContext[** Params, Return](_base.CreateContext[Params, Return], abc.
 
     def __get__(self, instance, owner):
         with self.instance_lock:
-            return dataclasses.replace(
-                self,
-                instance=instance,
-                context_by_key=self.context_by_key_by_instance.setdefault(instance, collections.OrderedDict()),
-                table_name=f'{self.table_name}__{instance}',
-            )
+            if (create_context := self.create_context_by_instance.get(instance)) is None:
+                create_context = self.create_context_by_instance[instance] = dataclasses.replace(
+                    self,
+                    create_table_event=type(self.create_table_event)(),
+                    instance=instance,
+                    context_by_key=collections.OrderedDict(),
+                    table_name=f'{self.table_name}__{instance}',
+                )
+            return create_context
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base.AsyncCreateContext[Params, Return]):
     context_t: typing.ClassVar[type[AsyncContext]] = AsyncContext
+    create_table_event_t: typing.ClassVar[type[asyncio.Event]] = asyncio.Event
 
     context_by_key: dict[Key, context_t[Params, Return]] = dataclasses.field(default_factory=dict)
-    context_by_key_by_instance: weakref.WeakKeyDictionary[
-        _base.Instance, dict[Key, context_t[Params, Return]]
-    ] = dataclasses.field(default_factory=weakref.WeakKeyDictionary)
+    create_table_event: create_table_event_t = dataclasses.field(default_factory=create_table_event_t)
     lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
 
     async def __call__(self, args: Params.args, kwargs: Params.kwargs) -> context_t[Params, Return] | Return:
         key = self.keygen(*args, **kwargs)
+        serialized_key = self.serialize_key(key)
         async with self.lock:
             while (context := self.context_by_key.get(key)) is not None:
                 self.lock.release()
@@ -200,11 +200,13 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
                 finally:
                     await self.lock.acquire()
 
-            async with (
-                aiosqlite.connect(self.db_path, isolation_level=None) as connection,
-                await connection.execute(f'SELECT value FROM `{self.table_name}` WHERE key = ?', (repr(key),)) as cursor
-            ):
-                match await cursor.fetchall():
+            async with aiosqlite.connect(self.db_path, isolation_level=None) as connection:
+                if not self.create_table_event.is_set():
+                    await connection.execute(self.create_table_text)
+                    self.create_table_event.set()
+                match await (await connection.execute(
+                    f'SELECT value FROM `{self.table_name}` WHERE key = ?', (serialized_key,)
+                )).fetchall():
                     case [[value]]:
                         return ast.literal_eval(value)
 
@@ -213,7 +215,7 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
                 context_by_key=self.context_by_key,
                 key=key,
                 lock=self.lock,
-                serialize_key=self.serialize_key,
+                serialized_key=serialized_key,
                 serialize_value=self.serialize_value,
                 table_name=self.table_name,
             )
@@ -224,15 +226,44 @@ class AsyncCreateContext[** Params, Return](CreateContext[Params, Return], _base
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class MultiCreateContext[** Params, Return](CreateContext[Params, Return], _base.MultiCreateContext[Params, Return]):
     context_t: typing.ClassVar[type[MultiContext]] = MultiContext
+    create_table_event_t: typing.ClassVar[type[threading.Event]] = threading.Event
 
     context_by_key: dict[Key, context_t[Params, Return]] = dataclasses.field(default_factory=dict)
-    context_by_key_by_instance: weakref.WeakKeyDictionary[
-        _base.Instance, dict[Key, context_t[Params, Return]]
-    ] = dataclasses.field(default_factory=weakref.WeakKeyDictionary)
+    create_table_event: create_table_event_t = dataclasses.field(default_factory=create_table_event_t)
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
     def __call__(self, args: Params.args, kwargs: Params.kwargs) -> context_t[Params, Return] | Return:
-        ...
+        key = self.keygen(*args, **kwargs)
+        serialized_key = self.serialize_key(key)
+        with self.lock:
+            while (context := self.context_by_key.get(key)) is not None:
+                self.lock.release()
+                try:
+                    context.event.wait()
+                finally:
+                    self.lock.acquire()
+
+            with sqlite3.connect(self.db_path, isolation_level=None) as connection:
+                if not self.create_table_event.is_set():
+                    connection.execute(self.create_table_text)
+                    self.create_table_event.set()
+                match connection.execute(
+                    f'SELECT value FROM `{self.table_name}` WHERE key = ?', (serialized_key,)
+                ).fetchall():
+                    case [[value]]:
+                        return ast.literal_eval(value)
+
+            context = self.context_by_key[key] = self.context_t[Params, Return](
+                connection=sqlite3.connect(self.db_path, isolation_level=None),
+                context_by_key=self.context_by_key,
+                key=key,
+                lock=self.lock,
+                serialized_key=serialized_key,
+                serialize_value=self.serialize_value,
+                table_name=self.table_name,
+            )
+
+        return context
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -241,9 +272,8 @@ class Decorator[** Params, Return]:
     deserialize_value: DeserializeValue[Return] = ast.literal_eval
     duration: typing.Annotated[float, annotated_types.Ge(0.0)] | None = None
     keygen: Keygen[Params] = ...
-    serialize_key: SerializeKey[Params] = repr
+    serialize_key: SerializeKey = repr
     serialize_value: SerializeValue[Return] = repr
-    size: int = sys.maxsize
 
     @typing.overload
     def __call__(
@@ -272,15 +302,15 @@ class Decorator[** Params, Return]:
                 create_context_t = AsyncCreateContext
             case _base.MultiDecorated():
                 create_context_t = MultiCreateContext
-            case _: assert False, 'Unreachable'
+            case _: assert False, 'Unreachable'  # pragma: no cover
 
         create_context: CreateContext[Params, Return] = create_context_t(
+            connection=sqlite3.connect(self.db_path),
             db_path=self.db_path,
             deserialize_value=self.deserialize_value,
             keygen=keygen,
             serialize_key=self.serialize_key,
             serialize_value=self.serialize_value,
-            size=self.size,
             table_name='__'.join(decoratee.register_key),
         )
 

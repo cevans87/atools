@@ -37,13 +37,26 @@ def db_path() -> str:
 async def test_async_zero_args(db_path: str) -> None:
     call_count = 0
 
-    @atools.SQLiteCache(db_path=db_path)
+    @atools.SQLiteCache()
     async def foo() -> None:
         nonlocal call_count
         call_count += 1
 
     await foo()
     await foo()
+    assert call_count == 1
+
+
+def test_multi_zero_args(db_path: str) -> None:
+    call_count = 0
+
+    @atools.SQLiteCache()
+    def foo() -> None:
+        nonlocal call_count
+        call_count += 1
+
+    foo()
+    foo()
     assert call_count == 1
 
 
@@ -62,12 +75,26 @@ async def test_async_primitive_arg(db_path, arg) -> None:
     assert call_count == 1
 
 
+@pytest.mark.parametrize('arg', [None, 1, 'foo', 0.0])
+def test_multi_primitive_arg(db_path, arg) -> None:
+    call_count = 0
+
+    @atools.SQLiteCache(db_path=db_path)
+    def foo(_) -> None:
+        nonlocal call_count
+        call_count += 1
+
+    foo(arg)
+    foo(arg)
+    assert call_count == 1
+
+
 @pytest.mark.asyncio
-async def test_method() -> None:
+async def test_async_method() -> None:
     call_count = 0
 
     class Foo:
-        @atools.SQLiteCache(db_path='/home/modulo/atools/scratch/test.sqlite')
+        @atools.SQLiteCache()
         async def foo(self) -> None:
             nonlocal call_count
             call_count += 1
@@ -82,8 +109,27 @@ async def test_method() -> None:
     assert call_count == 2
 
 
+def test_multi_method() -> None:
+    call_count = 0
+
+    class Foo:
+        @atools.SQLiteCache()
+        def foo(self) -> None:
+            nonlocal call_count
+            call_count += 1
+
+    foo0, foo1 = Foo(), Foo()
+    foo0.foo()
+    foo0.foo()
+    assert call_count == 1
+
+    foo1.foo()
+    foo1.foo()
+    assert call_count == 2
+
+
 @pytest.mark.asyncio
-async def test_classmethod() -> None:
+async def test_async_classmethod() -> None:
     call_count = 0
 
     class Foo:
@@ -107,166 +153,76 @@ async def test_classmethod() -> None:
     assert call_count == 1
 
 
-@pytest.mark.asyncio
-async def test_async_size_expires_memos() -> None:
+def test_multi_classmethod() -> None:
     call_count = 0
 
     class Foo:
-
-        @atools.SQLiteCache(size=1)
-        async def foo(self, _) -> None:
-            nonlocal call_count
-            call_count += 1
-
-    foo = Foo()
-    await foo.foo(0)
-    await foo.foo(1)
-    await foo.foo(0)
-    assert call_count == 3
-
-
-@pytest.mark.asyncio
-async def test_async_size_method_is_per_instance() -> None:
-    call_count = 0
-
-    class Foo:
-
-        @atools.SQLiteCache(size=1)
-        async def foo(self, _) -> None:
-            nonlocal call_count
-            call_count += 1
-
-    class Bar(Foo):
-        ...
-
-    class Baz(Foo):
-        ...
-
-    await asyncio.gather((foo := Foo()).foo(0), (bar := Bar()).foo(0), (baz := Baz()).foo(0))
-    assert call_count == 3
-    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
-    assert call_count == 3
-    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
-    assert call_count == 6
-    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
-    assert call_count == 6
-    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
-    assert call_count == 9
-    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
-    assert call_count == 9
-    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
-    assert call_count == 12
-    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
-    assert call_count == 15
-
-
-@pytest.mark.asyncio
-async def test_async_size_classmethod_is_per_class() -> None:
-    call_count = 0
-
-    class Foo:
-
         @classmethod
-        @atools.SQLiteCache(size=1)
-        async def foo(cls, _) -> None:
+        @atools.SQLiteCache()
+        def foo(cls) -> None:
             nonlocal call_count
             call_count += 1
 
-    class Bar(Foo):
-        ...
+    foo0, foo1 = Foo(), Foo()
+    foo0.foo()
+    foo0.foo()
+    assert call_count == 1
 
-    class Baz(Foo):
-        ...
+    foo1.foo()
+    foo1.foo()
+    assert call_count == 1
 
-    await asyncio.gather((foo := Foo()).foo(0), (bar := Bar()).foo(0), (baz := Baz()).foo(0))
-    assert call_count == 3
-    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
-    assert call_count == 3
-    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
-    assert call_count == 6
-    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
-    assert call_count == 6
-    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
-    assert call_count == 9
-    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
-    assert call_count == 9
-    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
-    assert call_count == 9
-    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
-    assert call_count == 9
+    Foo.foo()
+    Foo.foo()
+    assert call_count == 1
 
 
 @pytest.mark.asyncio
-async def test_async_size_staticmethod_is_per_declaration() -> None:
+async def test_async_staticmethod() -> None:
     call_count = 0
 
     class Foo:
-
         @staticmethod
-        @atools.SQLiteCache(size=1)
-        async def foo(_) -> None:
+        @atools.SQLiteCache()
+        async def foo() -> None:
             nonlocal call_count
             call_count += 1
 
-    class Bar(Foo):
-        ...
-
-    class Baz(Foo):
-        ...
-
-    await asyncio.gather((foo := Foo()).foo(0), (bar := Bar()).foo(0), (baz := Baz()).foo(0))
+    foo0, foo1 = Foo(), Foo()
+    await foo0.foo()
+    await foo0.foo()
     assert call_count == 1
-    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
+
+    await foo1.foo()
+    await foo1.foo()
     assert call_count == 1
-    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
-    assert call_count == 2
-    await asyncio.gather(foo.foo(1), bar.foo(1), baz.foo(1))
-    assert call_count == 2
-    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
-    assert call_count == 3
-    await asyncio.gather(foo.foo(0), bar.foo(0), baz.foo(0))
-    assert call_count == 3
-    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
-    assert call_count == 3
-    await asyncio.gather(Foo().foo(0), Bar().foo(0), Baz().foo(0))
-    assert call_count == 3
 
-
-@pytest.mark.asyncio
-async def test_herds_only_call_once() -> None:
-    call_count = 0
-    event = asyncio.Event()
-
-    @atools.SQLiteCache()
-    async def foo() -> None:
-        nonlocal call_count
-        await event.wait()
-        call_count += 1
-
-    futures = [asyncio.get_event_loop().create_task(foo()) for _ in range(10)]
-    event.set()
-    await asyncio.gather(*futures)
-
+    await Foo.foo()
+    await Foo.foo()
     assert call_count == 1
 
 
-@pytest.mark.asyncio
-async def test_exceptions_are_not_saved() -> None:
+def test_multi_staticmethod() -> None:
     call_count = 0
 
-    class FooException(Exception):
-        ...
+    class Foo:
+        @staticmethod
+        @atools.SQLiteCache()
+        def foo() -> None:
+            nonlocal call_count
+            call_count += 1
 
-    @atools.SQLiteCache()
-    async def foo() -> None:
-        nonlocal call_count
-        call_count += 1
-        raise FooException()
-
-    with pytest.raises(FooException):
-        await foo()
+    foo0, foo1 = Foo(), Foo()
+    foo0.foo()
+    foo0.foo()
     assert call_count == 1
 
-    with pytest.raises(FooException):
-        await foo()
-    assert call_count == 2
+    foo1.foo()
+    foo1.foo()
+    assert call_count == 1
+
+    Foo.foo()
+    Foo.foo()
+    assert call_count == 1
+
+

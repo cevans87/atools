@@ -231,7 +231,7 @@ class Decorator[** Params, Return]:
                 create_context_t = AsyncCreateContext
             case _base.MultiDecorated():
                 create_context_t = MultiCreateContext
-            case _: assert False, 'Unreachable'
+            case _: assert False, 'Unreachable'  # pragma: no cover
 
         create_context: CreateContext[Params, Return] = create_context_t(
             keygen=keygen,

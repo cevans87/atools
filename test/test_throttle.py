@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 import unittest.mock
-import pytest  # noqa
+import pytest
 
 import atools
 
@@ -81,7 +81,7 @@ async def test_async_value_starts_at_start(start: int) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('start', [1, 2, 10])
+@pytest.mark.parametrize('start', [1, 2, 3])
 async def test_exception_cuts_value_in_half(start) -> None:
     event = asyncio.Event()
     fail = True
