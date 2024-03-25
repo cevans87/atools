@@ -25,7 +25,7 @@ class Register(abc.ABC):
         def __str__(self) -> str:
             return '.'.join(self)
 
-    decoratees: dict[Key, Decoratee] = dataclasses.field(default_factory=dict)
+    decorateds: dict[Key, Decorated] = dataclasses.field(default_factory=dict)
     links: dict[Key, set[Name]] = dataclasses.field(default_factory=dict)
 
 
@@ -157,6 +157,7 @@ class Decorated[** Params, Return](abc.ABC):
     instance_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     register: Register
     register_key: Register.Key
+    __module__: str
     __name__: str
     __qualname__: str
 
@@ -270,7 +271,8 @@ class MultiDecorated[** Params, Return](Decorated[Params, Return]):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Decorator[** Params, Return]:
-    register: typing.ClassVar[Register] = Register()
+    global_register: typing.ClassVar[Register] = Register()
+    register: Register = global_register
 
     @typing.overload
     def __call__(self, decoratee: AsyncDecoratee[Params, Return], /) -> AsyncDecorated[Params, Return]: ...
@@ -279,6 +281,7 @@ class Decorator[** Params, Return]:
     def __call__(self, decoratee: MultiDecoratee[Params, Return], /) -> MultiDecorated[Params, Return]: ...
 
     def __call__(self, decoratee, /):
+
         register_key = Register.Key([
             *re.sub(r'.<.*>', '', '.'.join([decoratee.__module__, decoratee.__qualname__])).split('.')
         ])
@@ -295,10 +298,11 @@ class Decorator[** Params, Return]:
                 decoratee=decoratee,
                 register=self.register,
                 register_key=register_key,
+                __module__=decoratee.__module__,
                 __name__=decoratee.__name__,
                 __qualname__=decoratee.__qualname__,
             )
 
-        decorated.register.decoratees[decorated.register_key] = decorated
+        decorated.register.decorateds[decorated.register_key] = decorated
 
         return decorated

@@ -71,7 +71,10 @@ def test_parses_positional_only(arg) -> None:
     def entrypoint(foo: arg.t, /) -> dict[str, arg.t]:
         return locals()
 
-    assert entrypoint(shlex.split(arg.arg)) == {'foo': arg.expect}
+    # FIXME: change 'run' to take a string or decorated. Strings cause a lookup, decorateds run directly.
+    assert atools.CLI().run(
+        f'{entrypoint.__module__}.{entrypoint.__qualname__}', shlex.split(arg.arg)
+    ) == {'foo': arg.expect}
 
 
 @pytest.mark.parametrize('arg', args)
@@ -253,7 +256,7 @@ def test_dash_help_prints_parameter_annotation() -> None:
     @atools.CLI()
     def entrypoint(foo: typing.Annotated[int, 'This is my comment.']) -> ...: ...
 
-    assert 'This is my comment.' in entrypoint.cli.format_help()
+    assert 'This is my comment.' in entrypoint.argument_parser.format_help()
 
 
 def test_positional_only_without_default_works() -> None:
@@ -274,7 +277,7 @@ def test_dash_help_prints_entrypoint_doc() -> None:
     def entrypoint(foo: int) -> ...:
         """What's up, Doc?"""
 
-    assert """What's up, Doc?""" in entrypoint.cli.format_help()
+    assert """What's up, Doc?""" in entrypoint.argument_parser.format_help()
 
 
 def test_annotation_log_level_of_logger_sets_choices() -> None:
@@ -284,7 +287,7 @@ def test_annotation_log_level_of_logger_sets_choices() -> None:
     def entrypoint(foo: atools.CLI.Annotated.log_level(logger) = 'DEBUG') -> ...: ...
 
     for choice in typing.get_args(atools.CLI.Annotated.LogLevelStr):
-        assert choice in entrypoint.cli.format_help()
+        assert choice in entrypoint.argument_parser.format_help()
 
 
 def test_annotation_log_level_of_logger_sets_log_level() -> None:
@@ -371,7 +374,7 @@ def test_enum_help_text_shows_choices() -> None:
     @atools.CLI()
     def entrypoint(foo: FooEnum) -> dict[str, FooEnum]: ...
 
-    assert '(\'a\', \'b\', \'c\')' in entrypoint.cli.format_help()
+    assert '(\'a\', \'b\', \'c\')' in entrypoint.argument_parser.format_help()
 
 
 def test_literal_help_text_shows_choices() -> None:
@@ -379,7 +382,7 @@ def test_literal_help_text_shows_choices() -> None:
     @atools.CLI()
     def entrypoint(foo: typing.Literal[1, 2, 3]) -> dict[str, typing.Literal[1, 2, 3]]: ...
 
-    assert '(\'1\', \'2\', \'3\')' in entrypoint.cli.format_help()
+    assert '(\'1\', \'2\', \'3\')' in entrypoint.argument_parser.format_help()
 
 
 def test_help_shows_type_annotation() -> None:
@@ -387,7 +390,7 @@ def test_help_shows_type_annotation() -> None:
     @atools.CLI()
     def entrypoint(foo: dict[str, int]) -> ...: ...
 
-    assert str(dict[str, int]) in entrypoint.cli.format_help()
+    assert str(dict[str, int]) in entrypoint.argument_parser.format_help()
 
 
 def test_enum_enforces_choices() -> None:
@@ -415,14 +418,23 @@ def test_literal_enforces_choices() -> None:
 def test_cli_names_enforce_subcommand_structure() -> None:
     prefix = test_cli_names_enforce_subcommand_structure.__name__
 
-    for suffix in ['foo.baz', 'foo.qux', 'bar.quux', 'bar.corge']:
-        @atools.CLI(f'{prefix}.{suffix}')
-        def entrypoint() -> dict[str, object]: ...
+    class foo:
 
-    assert 'baz' in atools.CLI(f'{prefix}.foo').cli.format_help()
-    assert 'qux' in atools.CLI(f'{prefix}.foo').cli.format_help()
-    assert 'quux' in atools.CLI(f'{prefix}.bar').cli.format_help()
-    assert 'corge' in atools.CLI(f'{prefix}.bar').cli.format_help()
+        @classmethod
+        @atools.CLI()
+        def bar(cls): ...
+
+        @classmethod
+        @atools.CLI()
+        def baz(cls): ...
+
+    @atools.CLI()
+    def qux(): ...
+
+    assert 'foo' in atools.CLI().make_argument_parser(test_cli_names_enforce_subcommand_structure).format_help()
+    assert 'bar' in atools.CLI().make_argument_parser(foo)
+    assert 'baz' in atools.CLI().make_argument_parser(foo)
+    assert 'qux' in atools.CLI().make_argument_parser(test_cli_names_enforce_subcommand_structure).format_help()
 
 
 def test_unresolved_annotation_raises_assertion_error() -> None:
@@ -430,9 +442,9 @@ def test_unresolved_annotation_raises_assertion_error() -> None:
 
     with pytest.raises(AssertionError):
         @atools.CLI()
-        def entrypoint(foo: 'typing.Annotated[str, atools.CLI.AddArgument[str](choices=choices)]') -> ...: ...
+        def entrypoint(foo: 'typing.Annotated[str, atools.ArgumentParser.AddArgument[str](choices=choices)]') -> ...: ...
 
-    def entrypoint(foo: 'typing.Annotated[str, atools.CLI.AddArgument[str](choices=choices)]') -> ...: ...
+    def entrypoint(foo: 'typing.Annotated[str, atools.ArgumentParser.AddArgument[str](choices=choices)]') -> ...: ...
     entrypoint.__annotations__['foo'] = eval(entrypoint.__annotations__['foo'], globals(), locals())
     entrypoint = atools.CLI()(entrypoint)
 

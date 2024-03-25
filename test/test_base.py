@@ -40,7 +40,7 @@ def test_register() -> None:
     def foo():
         ...
 
-    assert foo.register_key in foo.register.decoratees
+    assert foo.register_key in foo.register.decorateds
     assert foo.register_key in foo.register.links
 
 

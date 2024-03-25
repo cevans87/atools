@@ -243,6 +243,6 @@ class Decorator[** Params, Return]:
             decoratee, create_contexts=tuple([create_context, *decoratee.create_contexts])
         )
 
-        decorated.register.decoratees[decorated.register_key] = decorated
+        decorated.register.decorateds[decorated.register_key] = decorated
 
         return decorated
