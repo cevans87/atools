@@ -26,4 +26,4 @@ def burst(foo: int) -> None:
 
 # Enables this CLI to be run with `python3 -m demo.advanced`.
 if __name__ == '__main__':
-    atools.CLI(__name__).run()
+    atools.CLI().run(__name__)

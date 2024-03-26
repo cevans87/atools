@@ -29,14 +29,17 @@ class Register(abc.ABC):
     links: dict[Key, set[Name]] = dataclasses.field(default_factory=dict)
 
 
+@typing.runtime_checkable
 class Decoratee[** Params, Return](typing.Protocol):
     __call__: typing.Callable[Params, typing.Awaitable[Return] | Return]
 
 
+@typing.runtime_checkable
 class AsyncDecoratee[** Params, Return](typing.Protocol):
     __call__: typing.Callable[Params, typing.Awaitable[Return]]
 
 
+@typing.runtime_checkable
 class MultiDecoratee[** Params, Return](typing.Protocol):
     __call__: typing.Callable[Params, Return]
 
@@ -275,16 +278,28 @@ class Decorator[** Params, Return]:
     register: Register = global_register
 
     @typing.overload
-    def __call__(self, decoratee: AsyncDecoratee[Params, Return], /) -> AsyncDecorated[Params, Return]: ...
+    def __call__(
+        self,
+        decoratee: AsyncDecoratee[Params, Return],
+        /,
+        *,
+        register_key: Register.Key = ...,
+    ) -> AsyncDecorated[Params, Return]: ...
 
     @typing.overload
-    def __call__(self, decoratee: MultiDecoratee[Params, Return], /) -> MultiDecorated[Params, Return]: ...
+    def __call__(
+        self,
+        decoratee: MultiDecoratee[Params, Return],
+        /,
+        *,
+        register_key: Register.Key = ...,
+    ) -> MultiDecorated[Params, Return]: ...
 
-    def __call__(self, decoratee, /):
+    def __call__(self, decoratee, /, *, register_key: Register.Key = ...):
 
         register_key = Register.Key([
             *re.sub(r'.<.*>', '', '.'.join([decoratee.__module__, decoratee.__qualname__])).split('.')
-        ])
+        ]) if register_key is ... else register_key
 
         for i in range(len(register_key)):
             self.register.links.setdefault(register_key[:i], set()).add(register_key[i])

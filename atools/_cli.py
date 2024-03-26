@@ -66,7 +66,7 @@ class _Exception(Exception):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class _Parser[T]:
+class ParseOne[T]:
     t: type[T]
 
     type _Arg = bool | float | int | str | list | dict | set | None
@@ -79,22 +79,22 @@ class _Parser[T]:
                 assert isinstance(arg, self.t), f'{self} expected `{self.t}`, got `{arg}`'
             case (builtins.frozenset | builtins.list | builtins.set), (Value,):
                 assert isinstance(arg, (list, set))
-                arg = origin([_Parser(t=Value)._parse_arg(value) for value in arg])
+                arg = origin([ParseOne(t=Value)._parse_arg(value) for value in arg])
             case builtins.dict, (Key, Value):
                 assert isinstance(arg, dict)
-                arg = {_Parser(t=Key)._parse_arg(key): _Parser(t=Value)._parse_arg(value) for key, value in arg.items()}
+                arg = {ParseOne(t=Key)._parse_arg(key): ParseOne(t=Value)._parse_arg(value) for key, value in arg.items()}
 
             case builtins.tuple, ():
                 assert arg == tuple()
             case builtins.tuple, (Value,):
                 assert isinstance(arg, tuple) and len(arg) == 1
-                arg = tuple([_Parser(t=Value)._parse_arg(arg[0])])
+                arg = tuple([ParseOne(t=Value)._parse_arg(arg[0])])
             case builtins.tuple, (Value, builtins.Ellipsis):
                 assert isinstance(arg, tuple)
-                arg = tuple([_Parser(t=Value)._parse_arg(value) for value in arg])
+                arg = tuple([ParseOne(t=Value)._parse_arg(value) for value in arg])
             case builtins.tuple, (Value, *Values):
                 assert isinstance(arg, tuple) and len(arg) > 0
-                arg = (_Parser(t=Value)._parse_arg(arg[0]), *_Parser(t=tuple[*Values])._parse_arg(arg[1:]))
+                arg = (ParseOne(t=Value)._parse_arg(arg[0]), *ParseOne(t=tuple[*Values])._parse_arg(arg[1:]))
 
             case (typing.Union | types.UnionType), Values:
                 assert type(arg) in Values
@@ -115,7 +115,7 @@ class _Parser[T]:
 
         if self.t != str:
             try:
-                arg: _Parser._Arg = ast.literal_eval(arg)
+                arg: ParseOne._Arg = ast.literal_eval(arg)
             except (SyntaxError, ValueError,):
                 pass
 
@@ -255,7 +255,7 @@ class _AddArgument[T]:
 
         if add_argument.type is ...:
             if add_argument.action not in {'count', 'store_false', 'store_true'}:
-                add_argument = dataclasses.replace(add_argument, type=lambda arg: _Parser(t=t).parse_arg(arg))
+                add_argument = dataclasses.replace(add_argument, type=lambda arg: ParseOne(t=t).parse_arg(arg))
 
         return add_argument
 
@@ -385,6 +385,7 @@ class Decorator[** Params, Return]:
     AddArgument: typing.ClassVar = _AddArgument
     Annotated: typing.ClassVar = _Annotated
     Exception: typing.ClassVar = _Exception
+    type Key = str | _base.Register.Key | _base.Decorated | _base.Decoratee
 
     @typing.overload
     def __call__(self, decoratee: _base.AsyncDecoratee[Params, Return], /) -> _base.AsyncDecorated[Params, Return]: ...
@@ -402,19 +403,44 @@ class Decorator[** Params, Return]:
         # We override the registered decoratee with the given decoratee.
         self.register.decorateds[decoratee.register_key] = decoratee
 
-        # Yes, we really intend to return the decoratee here. The only point of CLI is to register the decoratee. We
-        # don't make a parser unless asked via CLI().get_argument_parser() or run unless asked via CLI().main().
+        # We really do intend to return the decoratee here. The only point of CLI is to register the decoratee. We don't
+        # make a parser unless asked via CLI().get_argument_parser() or run unless asked via CLI().main().
         return decoratee
 
-    @staticmethod
-    def make_argument_parser(decoratee: _base.Decoratee[Params, Return]) -> ArgumentParser[Params, Return]:
-        if not isinstance(decoratee, _base.Decorated):
-            decoratee = _base.Decorator[Params, Return]()(decoratee)
-        signature = inspect.signature(decoratee.decoratee)
+    def gen_decorated(self, key: Key) -> _base.Decorated:
+        match key:
+            case str(name):
+                register_key = _base.Register.Key([*re.sub(r'.<.*>', '', name).split('.')])
+            case tuple(register_key):
+                ...
+            case _base.Decorated() as decorated:
+                register_key = decorated.register_key
+            case _base.Decoratee() as decoratee:
+                register_key = _base.Register.Key([
+                    *re.sub(r'.<.*>', '', '.'.join([decoratee.__module__, decoratee.__qualname__])).split('.')
+                ])
+            case _: assert False, 'Unreachable'  # pragma: no cover
 
-        arguemnt_parser = ArgumentParser(
+        if (decorated := self.register.decorateds.get(register_key)) is None:
+            def decoratee(subcommand: typing.Literal[*sorted(self.register.links.get(register_key, set()))]) -> None:  # noqa
+                self.get_argument_parser(register_key).print_usage()
+
+            # Using the local variables in function signature converts the entire annotation to a string without
+            #  evaluating it. Force evaluation of the annotation.
+            #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
+            decoratee.__annotations__['subcommand'] = eval(decoratee.__annotations__['subcommand'], None, locals())
+
+            decorated = _base.Decorator(register=self.register)(decoratee, register_key=register_key)
+
+        return decorated
+
+    def get_argument_parser(self, key: Key) -> ArgumentParser[Params, Return]:
+        decorated = self.gen_decorated(key)
+        signature = inspect.signature(decorated.decoratee)
+
+        argument_parser = ArgumentParser(
             description='\n'.join(filter(None, [
-                decoratee.decoratee.__doc__,
+                decorated.decoratee.__doc__,
                 f'return type: {pprint.pformat(signature.return_annotation, compact=True, width=75)}'
             ])),
             formatter_class=argparse.RawTextHelpFormatter
@@ -428,32 +454,23 @@ class Decorator[** Params, Return]:
                 lambda item: not isinstance(item[1], typing.Hashable) or item[1] is not ...,
                 dataclasses.asdict(_AddArgument().of_parameter(parameter)).items()
             ))
-            arguemnt_parser.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
+            argument_parser.add_argument(*add_argument_params.pop('name_or_flags'), **add_argument_params)
 
-        return arguemnt_parser
+        return argument_parser
 
-    def run(self, name: str, args: list[str] = ...) -> None:
-        register_key = _base.Register.Key([*re.sub(r'.<.*>', '', name).split('.')])
+    def run(self, key: Key, args: list[str] = ...) -> None:
+        register_key = self.gen_decorated(key).register_key
+
         args = sys.argv[1:] if args is ... else args
 
         while args and (_base.Register.Key([*register_key, args[0]]) in self.register.links):
             register_key = _base.Register.Key([*register_key, args.pop(0)])
 
-        if (decorated := self.register.decorateds.get(register_key)) is None:
-            def decoratee(subcommand: typing.Literal[*sorted(self.register.links.get(register_key, set()))]) -> None:  # noqa
-                self.make_argument_parser(decoratee).print_usage()
-
-            # Using the local variables in function signature converts the entire annotation to a string without
-            #  evaluating it. Rather than let that happen, force evaluation of the annotation.
-            #  ref. https://peps.python.org/pep-0563/#resolving-type-hints-at-runtime
-            decoratee.__annotations__['subcommand'] = eval(decoratee.__annotations__['subcommand'], None, locals())
-
-            decorated = Decorator(register=self.register)(decoratee)
-
-        argument_parser = self.make_argument_parser(decorated)
-
+        argument_parser = self.get_argument_parser(register_key)
         parsed_ns, remainder_args = argument_parser.parse_known_args(args)
         parsed_args = vars(parsed_ns)
+
+        decorated = self.gen_decorated(register_key)
 
         # Note that this may be the registered entrypoint of a submodule, not the entrypoint that is decorated.
         args, kwargs = [], {}
@@ -485,7 +502,7 @@ class Decorator[** Params, Return]:
                     for remainder_arg in remainder_args:
                         if remainder_arg.startswith('--'):
                             parser.add_argument(
-                                remainder_arg, type=lambda arg: _Parser(t=_parameter.annotation).parse_arg(arg)
+                                remainder_arg, type=lambda arg: ParseOne(t=_parameter.annotation).parse_arg(arg)
                             )
                     remainder_ns = parser.parse_args(remainder_args)
                     remainder_args = []

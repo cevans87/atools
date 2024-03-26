@@ -288,8 +288,6 @@ def log_level_with_bound_logger_name(log_level: atools.CLI.Annotated.log_level(_
     """
     print(locals())
 
-    print(f'Logger level is set to {logging.getLevelName(logging.getLogger(__name__).getEffectiveLevel())}')
-
     logging.getLogger(__name__).debug('If you can see this log line, your log_level is at least DEBUG.')
     logging.getLogger(__name__).info('If you can see this log line, your log_level is at least INFO.')
     logging.getLogger(__name__).warning('If you can see this log line, your log_level is at least WARNING.')
@@ -308,8 +306,6 @@ def quiet_with_bound_logger(quiet: atools.CLI.Annotated.quiet(logger) = logging.
         python3 -m demo cli quiet_with_bound_logger -qqqqq
     """
     print(locals())
-
-    print(f'Logger level is set to {logging.getLevelName(logger.getEffectiveLevel())}')
 
     logger.debug('If you can see this log line, your log_level is at least DEBUG.')
     logger.info('If you can see this log line, your log_level is at least INFO.')
@@ -330,8 +326,6 @@ def verbose_with_bound_logger(verbose: atools.CLI.Annotated.verbose(logger) = lo
     """
     print(locals())
 
-    print(f'Logger level is set to {logging.getLevelName(logger.getEffectiveLevel())}')
-
     logger.debug('If you can see this log line, your log_level is at least DEBUG.')
     logger.info('If you can see this log line, your log_level is at least INFO.')
     logger.warning('If you can see this log line, your log_level is at least WARNING.')
@@ -340,4 +334,4 @@ def verbose_with_bound_logger(verbose: atools.CLI.Annotated.verbose(logger) = lo
 
 
 if __name__ == '__main__':
-    atools.CLI(__name__).run()
+    atools.CLI().run(__name__)

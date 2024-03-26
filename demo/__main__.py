@@ -13,8 +13,8 @@ import logging
 
 import atools
 
-from . import advanced, cli, first_example, memoize, throttle
+from . import advanced, cli
 
 logging.basicConfig(level=logging.CRITICAL, format='%(levelname)s: %(message)s')
 
-atools.CLI(__package__).run()
+atools.CLI().run(__package__)
